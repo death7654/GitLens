@@ -21,9 +21,12 @@ async function loadFolder(path) {
     selectedRoot = repo.root;
     $('#welcome').hidden = true; $('#workspace').hidden = false;
     $('#repo-name').textContent = repo.name || 'Untitled folder'; $('#repo-path').textContent = repo.root;
+    $('#topbar-repo').textContent = repo.name || 'Untitled folder';
+    $('#sidebar-repo-name').textContent = repo.name || 'Untitled folder'; $('#sidebar-repo-path').textContent = repo.root;
     $('#repo-branch').textContent = repo.branch; $('#repo-clean').textContent = repo.clean ? 'clean' : 'changes present';
     $('#repo-clean').style.color = repo.clean ? 'var(--green)' : 'var(--orange)'; $('#repo-commit').textContent = repo.commit;
     $('#repo-count').textContent = repo.entries.length; $('#file-count').textContent = `${repo.entries.length} items`;
+    $('#sidebar-count').textContent = repo.entries.length;
     renderEntries(repo.entries); log(`Opened ${repo.name} locally.`); window.scrollTo({ top: 0, behavior: 'smooth' });
   } catch (error) { notify(String(error)); log(String(error), true); }
 }
@@ -55,6 +58,9 @@ async function pull() {
 }
 
 $('#choose-folder').addEventListener('click', chooseFolder); $('#change-folder').addEventListener('click', chooseFolder); $('#git-pull').addEventListener('click', pull);
+$('#sidebar-repo').addEventListener('click', chooseFolder);
+$('#sidebar-files').addEventListener('click', () => $('#workspace').hidden ? chooseFolder() : $('#file-list').scrollIntoView({ behavior: 'smooth', block: 'center' }));
+$('#refresh-view').addEventListener('click', () => selectedRoot && loadFolder(selectedRoot));
 $('#theme-toggle').addEventListener('click', () => document.body.classList.toggle('dim-mode'));
 
 let greetInputEl;
