@@ -1,4 +1,5 @@
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
+mod bob_provider;
 mod doc_fetch;
 mod git_mining;
 mod mock_provider;
@@ -17,10 +18,12 @@ fn greet(name: &str) -> String {
     format!("Hello, {}! You've been greeted from Rust!", name)
 }
 
-/// Person 6 plugs their concrete provider into this state at app startup.
-/// Until then, `StubProvider` keeps the app compiling and the IPC surface
-/// testable — any call through it returns an explicit "not yet wired" error
-/// rather than silently succeeding.
+/// Holds the active `ModelProvider` for the lifetime of the app.
+///
+/// Provider selection at startup (in priority order):
+///   1. `GITLENS_MOCK_PROVIDER=1`  → `MockProvider`  (test / CI)
+///   2. `MODEL_PROVIDER=bob`       → `BobShellProvider` (needs `BOB_API_KEY`)
+///   3. default                    → `StubProvider`  (returns an error on every call)
 pub struct ProviderState {
     pub provider: Arc<dyn ModelProvider>,
 }
@@ -30,7 +33,12 @@ struct StubProvider;
 #[async_trait::async_trait]
 impl ModelProvider for StubProvider {
     async fn call(&self, _req: provider::ModelRequest) -> Result<provider::ModelResponse, String> {
-        Err("model provider not yet wired (owned by Person 6)".into())
+        Err(
+            "No model provider is configured. \
+             Set MODEL_PROVIDER=bob and BOB_API_KEY, \
+             or set GITLENS_MOCK_PROVIDER=1 for testing."
+                .into(),
+        )
     }
 }
 
@@ -39,12 +47,22 @@ pub fn run() {
     let provider: Arc<dyn ModelProvider> =
         if std::env::var("GITLENS_MOCK_PROVIDER").as_deref() == Ok("1") {
             Arc::new(mock_provider::MockProvider)
+        } else if std::env::var("MODEL_PROVIDER").as_deref() == Ok("bob") {
+            match bob_provider::BobShellProvider::from_env() {
+                Ok(p) => Arc::new(p),
+                Err(e) => {
+                    eprintln!("[gitlens] BobShellProvider init failed: {e}");
+                    eprintln!("[gitlens] Falling back to StubProvider.");
+                    Arc::new(StubProvider)
+                }
+            }
         } else {
             Arc::new(StubProvider)
         };
+
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
-        .manage(ProviderState { provider: provider })
+        .manage(ProviderState { provider })
         .invoke_handler(tauri::generate_handler![
             greet,
             git_mining::extract_git_history,
