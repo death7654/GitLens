@@ -1,100 +1,18 @@
 <!doctype html>
 <html lang="en">
-  <head>
-    <meta charset="UTF-8" />
-    <link rel="stylesheet" href="styles.css" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Tauri App</title>
-    <script type="module" src="/main.js" defer></script>
-  </head>
-
-  <body>
-    <main class="container">
-      <h1>Welcome to Tauri</h1>
-
-      <div class="row">
-        <a href="https://tauri.app" target="_blank">
-          <img src="/assets/tauri.svg" class="logo tauri" alt="Tauri logo" />
-        </a>
-        <a
-          href="https://developer.mozilla.org/en-US/docs/Web/JavaScript"
-          target="_blank"
-        >
-          <img
-            src="/assets/javascript.svg"
-            class="logo vanilla"
-            alt="JavaScript logo"
-          />
-        </a>
-      </div>
-      <p>Click on the Tauri logo to learn more about the framework</p>
-
-      <form class="row" id="greet-form">
-        <input id="greet-input" placeholder="Enter a name..." />
-        <button type="submit">Greet</button>
-      </form>
-      <p id="greet-msg"></p>
-
-      <hr style="margin: 2em 0; opacity: 0.3" />
-
-      <h2>Git History Extraction — test panel</h2>
-      <p style="max-width: 640px; margin: 0 auto 1em">
-        Point this at a local git repo and run the Person 1 extraction
-        pipeline. Subsystems are edited as JSON below; edit the array to
-        match paths that actually exist in the repo you test with.
-      </p>
-
-      <form id="mining-form" style="max-width: 640px; margin: 0 auto; text-align: left">
-        <label style="display: block; margin-bottom: 0.5em">
-          Repo path (local filesystem path to a git repo)
-          <span class="row" style="gap: 0.5em; justify-content: flex-start; margin-top: 0.25em">
-            <input id="repo-path-input" style="flex: 1" placeholder="/home/you/some-cloned-repo" />
-            <button type="button" id="discover-subsystems-btn">Discover subsystems</button>
-          </span>
-        </label>
-        <p id="discover-status" style="margin: 0 0 0.5em; font-size: 0.85em; opacity: 0.75"></p>
-
-        <label style="display: block; margin-bottom: 0.5em">
-          Subsystems (JSON array of { name, path_prefixes })
-          <textarea
-            id="subsystems-input"
-            rows="6"
-            style="width: 100%; margin-top: 0.25em; font-family: monospace; font-size: 0.85em"
-          >[
-  { "name": "frontend", "path_prefixes": ["src/", "index.html", "styles.css", "main.js"] },
-  { "name": "backend", "path_prefixes": ["src-tauri/"] }
-]</textarea
-          >
-        </label>
-
-        <div class="row" style="gap: 0.5em; justify-content: flex-start">
-          <label>
-            Max age (days)
-            <input id="max-age-input" type="number" value="730" style="width: 6em" />
-          </label>
-          <label>
-            Max commits / subsystem
-            <input id="max-commits-input" type="number" value="200" style="width: 6em" />
-          </label>
-          <button type="submit">Run extraction</button>
-        </div>
-      </form>
-
-      <p id="mining-status"></p>
-      <pre
-        id="mining-output"
-        style="
-          text-align: left;
-          max-width: 900px;
-          margin: 1em auto;
-          max-height: 500px;
-          overflow: auto;
-          background: #00000010;
-          padding: 1em;
-          border-radius: 8px;
-          font-size: 0.8em;
-        "
-      ></pre>
-    </main>
-  </body>
-</html>
+<head><meta charset="UTF-8"/><meta name="viewport" content="width=device-width,initial-scale=1.0"/><meta name="theme-color" content="#11130f"/><title>GitLens — local repository explorer</title><link rel="stylesheet" href="/styles.css"/><script type="module" src="/main.js" defer></script></head>
+<body>
+<div class="app-shell">
+  <header class="topbar"><a class="brand" href="#"><span class="brand-mark">✦</span><span>gitlens</span><small>LOCAL REPOSITORY EXPLORER</small></a><div class="topbar-right"><span class="local-pill"><i></i> local first</span><button class="icon-button" id="theme-toggle" aria-label="Toggle theme">◐</button></div></header>
+  <main>
+    <section class="welcome" id="welcome"><div class="welcome-copy"><p class="eyebrow">A quiet window into your code</p><h1>Understand the<br/><em>shape of change.</em></h1><p class="lede">Point GitLens at a local folder. Browse its files, inspect the details, and pull the latest changes when you are ready.</p><button class="primary-button" id="choose-folder"><span>Choose a folder</span><b>↗</b></button><p class="privacy-note"><span>⌁</span> Nothing leaves your machine until you ask Git to pull.</p></div><div class="welcome-art"><div class="art-ring ring-a"></div><div class="art-ring ring-b"></div><div class="art-ring ring-c"></div><div class="art-dot"></div><span class="art-label label-a">your files</span><span class="art-label label-b">your history</span><span class="art-label label-c">your context</span></div></section>
+    <section class="workspace" id="workspace" hidden>
+      <div class="workspace-head"><div class="repo-heading"><span class="repo-icon">⌂</span><div><p class="eyebrow">Selected folder</p><h2 id="repo-name">Repository</h2><code id="repo-path">/path/to/folder</code></div></div><div class="repo-actions"><button class="secondary-button" id="change-folder">Change folder</button><button class="pull-button" id="git-pull"><span class="pull-symbol">↓</span> Git pull</button></div></div>
+      <div class="repo-stats"><div><span>branch</span><strong id="repo-branch">—</strong></div><div><span>working tree</span><strong id="repo-clean">—</strong></div><div><span>latest commit</span><strong id="repo-commit">—</strong></div><div><span>visible items</span><strong id="repo-count">—</strong></div></div>
+      <div class="explorer"><aside class="file-panel"><div class="panel-title"><span>Explorer</span><small id="file-count">0 items</small></div><div class="file-list" id="file-list"></div></aside><section class="preview-panel"><div class="preview-head"><div><span class="file-kind" id="preview-kind">FILE PREVIEW</span><h3 id="preview-name">Select a file</h3></div><span id="preview-size"></span></div><pre id="file-preview"><span class="empty-preview">Choose a file from the explorer to inspect it here.</span></pre></section></div>
+      <div class="activity"><div class="activity-title"><span>Activity</span><small>session log</small></div><div class="activity-log" id="activity-log"><p><i>•</i> Ready to explore this folder.</p></div></div>
+    </section>
+    <section class="features" id="features"><div class="feature-intro"><p class="eyebrow">Built for local thinking</p><h2>Your codebase,<br/><em>without the noise.</em></h2></div><div class="feature-grid"><article><span>01</span><h3>Stay close to the source</h3><p>Files are read directly from your machine. No upload, no account, no mystery layer between you and the code.</p></article><article><span>02</span><h3>Pull when you decide</h3><p>Run a fast-forward-only Git pull from the app and see the result in a clear, readable activity log.</p></article><article><span>03</span><h3>Works where you work</h3><p>Responsive CSS and conservative browser APIs keep the experience steady across Windows WebView2 and Linux WebKitGTK.</p></article></div></section>
+  </main><footer><span class="brand-mark">✦</span><span>gitlens / local by default</span><span>built for curious teams</span></footer>
+</div><div class="toast" id="toast" role="status"></div>
+</body></html>
