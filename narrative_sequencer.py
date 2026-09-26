@@ -23,40 +23,66 @@ from __future__ import annotations
 
 import json
 import re
-from abc import ABC, abstractmethod
+from abc import abstractmethod
 from dataclasses import dataclass, field, asdict
 from datetime import datetime, timezone
 from typing import Iterable, Literal, Optional
 
+from pipeline.providers.base import ModelProvider
+
 
 # ---------------------------------------------------------------------------
-# 1. Model abstraction interface (contract with Person 6)
+# 1. Model abstraction interface
 # ---------------------------------------------------------------------------
-# Person 6 owns the real implementation (rate limiting, retries, provider
-# choice, prompt logging, etc). Person 4 and Person 3 both code against this
-# interface only, so the underlying model call is swappable without touching
-# sequencing/generation logic.
+# Production code uses the shared ModelProvider abstraction owned by Person 6.
+#
+# ModelInterface is retained only as a backward-compatible adapter for the
+# existing tests, which use the older call_model() contract. It does NOT
+# implement a provider or call any model SDK directly.
 
-class ModelInterface(ABC):
-    """Abstraction boundary. Do not call any model SDK directly outside this."""
+
+class ModelInterface(ModelProvider):
+    """
+    Backward-compatible test interface.
+
+    Production providers should implement ModelProvider.generate().
+    Existing tests may continue implementing call_model().
+    """
 
     @abstractmethod
-    def call_model(self, prompt: str, *, max_tokens: int = 500, **kwargs) -> str:
-        """Send `prompt` to the underlying model and return the text response."""
+    def call_model(
+        self,
+        prompt: str,
+        *,
+        max_tokens: int = 500,
+        **kwargs,
+    ) -> str:
+        """Legacy test contract."""
         raise NotImplementedError
+
+    def generate(self, prompt: str) -> str:
+        """Adapt the legacy test interface to ModelProvider."""
+        return self.call_model(prompt)
 
 
 class EchoStubModel(ModelInterface):
     """
-    A trivial stand-in so this module runs/tests before Person 6's real
-    interface lands. Replace with the real implementation at wiring time —
-    nothing else in this file changes.
+    Simple stand-in for local smoke tests.
+
+    Person 6's real provider implementation should be supplied when the
+    application is wired together. No model SDK is used here.
     """
 
-    def call_model(self, prompt: str, *, max_tokens: int = 500, **kwargs) -> str:
+    def call_model(
+        self,
+        prompt: str,
+        *,
+        max_tokens: int = 500,
+        **kwargs,
+    ) -> str:
         return (
             "[STUB OUTPUT — replace EchoStubModel with Person 6's real "
-            "ModelInterface implementation]\n"
+            "ModelProvider implementation]\n"
             f"(prompt was {len(prompt)} chars)"
         )
 
@@ -65,34 +91,43 @@ class EchoStubModel(ModelInterface):
 # 2. Input data contracts
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class PRDiscussion:
     """One PR's discussion thread, as handed off by the upstream stage."""
+
     pr_number: int
     pr_url: str
-    excerpts: list[str] = field(default_factory=list)  # raw discussion text, source material only — never emitted verbatim
+    excerpts: list[str] = field(default_factory=list)
+    # Raw discussion text is source material only — never emitted verbatim.
 
 
 @dataclass
 class SelectedCommit:
     """A single commit selected upstream for inclusion in the tour."""
+
     commit_hash: str
     commit_url: str
     message: str
     author: str
     timestamp: str  # ISO 8601
-    subsystem: str  # e.g. "auth", "billing", "infra" — set by upstream tagging
+    subsystem: str  # e.g. "auth", "billing", "infra"
     files_changed: list[str] = field(default_factory=list)
-    diff_summary: str = ""  # short structured summary of the diff, NOT the raw diff
+    diff_summary: str = ""
+    # Short structured summary of the diff, NOT the raw diff.
+
     pr: Optional[PRDiscussion] = None
 
 
 # ---------------------------------------------------------------------------
-# 3. Output data contract (what Person 5 consumes)
+# 3. Output data contract
 # ---------------------------------------------------------------------------
+
 
 @dataclass
 class TourStop:
+    """One finished narrative stop consumed by Person 5."""
+
     order: int
     commit_hash: str
     commit_url: str
@@ -112,6 +147,7 @@ class TourStop:
 # 4. Ordering
 # ---------------------------------------------------------------------------
 
+
 OrderMode = Literal["chronological", "subsystem_cluster"]
 
 
@@ -127,6 +163,7 @@ def order_commits(
     - "subsystem_cluster": group by subsystem (in `subsystem_order` if given,
       else first-seen order), chronological within each cluster.
     """
+
     commits = list(commits)
 
     if mode == "chronological":
@@ -135,61 +172,93 @@ def order_commits(
     if mode == "subsystem_cluster":
         if subsystem_order is None:
             seen = []
-            for c in commits:
-                if c.subsystem not in seen:
-                    seen.append(c.subsystem)
+
+            for commit in commits:
+                if commit.subsystem not in seen:
+                    seen.append(commit.subsystem)
+
             subsystem_order = seen
 
-        rank = {name: i for i, name in enumerate(subsystem_order)}
+        rank = {
+            name: index
+            for index, name in enumerate(subsystem_order)
+        }
+
         return sorted(
             commits,
-            key=lambda c: (rank.get(c.subsystem, len(rank)), c.timestamp),
+            key=lambda c: (
+                rank.get(c.subsystem, len(rank)),
+                c.timestamp,
+            ),
         )
 
     raise ValueError(f"Unknown order mode: {mode}")
 
 
 # ---------------------------------------------------------------------------
-# 5. Verbatim-reproduction guard (copyright requirement)
+# 5. Verbatim-reproduction guard
 # ---------------------------------------------------------------------------
-# PR discussion excerpts are source material for paraphrasing only. This
-# guard catches cases where a generated narrative accidentally reproduces a
-# long run of the original text, so a violation is caught deterministically
-# rather than trusted to the model's instruction-following alone.
+# PR discussion excerpts are source material for paraphrasing only.
+# This guard catches cases where generated narrative accidentally reproduces
+# a long run of original text.
+
 
 def _normalize(text: str) -> list[str]:
     return re.findall(r"[a-z0-9']+", text.lower())
 
 
 def longest_shared_ngram(generated: str, source: str) -> int:
-    """Return the length (in words) of the longest run of words shared
-    verbatim between `generated` and `source`."""
-    g = _normalize(generated)
-    s = _normalize(source)
-    if not g or not s:
+    """
+    Return the length in words of the longest run of words shared verbatim
+    between `generated` and `source`.
+    """
+
+    generated_words = _normalize(generated)
+    source_words = _normalize(source)
+
+    if not generated_words or not source_words:
         return 0
 
-    s_index: dict[str, list[int]] = {}
-    for i, w in enumerate(s):
-        s_index.setdefault(w, []).append(i)
+    source_index: dict[str, list[int]] = {}
+
+    for index, word in enumerate(source_words):
+        source_index.setdefault(word, []).append(index)
 
     best = 0
-    for i in range(len(g)):
-        for j in s_index.get(g[i], []):
-            k = 0
-            while i + k < len(g) and j + k < len(s) and g[i + k] == s[j + k]:
-                k += 1
-            best = max(best, k)
+
+    for generated_index in range(len(generated_words)):
+        for source_index_value in source_index.get(
+            generated_words[generated_index],
+            [],
+        ):
+            length = 0
+
+            while (
+                generated_index + length < len(generated_words)
+                and source_index_value + length < len(source_words)
+                and generated_words[generated_index + length]
+                == source_words[source_index_value + length]
+            ):
+                length += 1
+
+            best = max(best, length)
+
     return best
 
 
-MAX_ALLOWED_SHARED_RUN = 6  # words — beyond this, treat as verbatim reproduction
+MAX_ALLOWED_SHARED_RUN = 6
+# Words — beyond this, treat as verbatim reproduction.
 
 
-def violates_verbatim_rule(generated_text: str, source_excerpts: list[str]) -> bool:
+def violates_verbatim_rule(
+    generated_text: str,
+    source_excerpts: list[str],
+) -> bool:
+    """Return True when generated text overlaps source text too closely."""
+
     return any(
-        longest_shared_ngram(generated_text, src) > MAX_ALLOWED_SHARED_RUN
-        for src in source_excerpts
+        longest_shared_ngram(generated_text, source) > MAX_ALLOWED_SHARED_RUN
+        for source in source_excerpts
     )
 
 
@@ -197,18 +266,22 @@ def violates_verbatim_rule(generated_text: str, source_excerpts: list[str]) -> b
 # 6. Narrative generation
 # ---------------------------------------------------------------------------
 
+
 _NARRATIVE_PROMPT_TEMPLATE = """You are writing one stop of a codebase "narrative tour" for new engineering hires.
 
 Given the commit and PR context below, produce THREE short sections:
+
 1. WHAT CHANGED — a plain-language summary of the change itself.
 2. WHAT PROMPTED IT — why this change happened, based on the PR discussion.
 3. TAKEAWAY — one or two sentences a new hire should remember from this.
 
 CRITICAL RULES:
-- Paraphrase everything. Never quote PR discussion text verbatim, not even short phrases.
+- Paraphrase everything.
+- Never quote PR discussion text verbatim.
 - Do not copy more than a few consecutive words from the source material.
 - Keep each section to 2-4 sentences.
 - Output exactly in this format, with no extra commentary:
+
 WHAT_CHANGED: ...
 WHAT_PROMPTED_IT: ...
 TAKEAWAY: ...
@@ -224,7 +297,12 @@ Diff summary: {diff_summary}
 
 
 def _build_prompt(commit: SelectedCommit) -> str:
-    discussion = "\n".join(commit.pr.excerpts) if commit.pr else "(no linked PR discussion)"
+    discussion = (
+        "\n".join(commit.pr.excerpts)
+        if commit.pr
+        else "(no linked PR discussion)"
+    )
+
     return _NARRATIVE_PROMPT_TEMPLATE.format(
         message=commit.message,
         files=", ".join(commit.files_changed) or "(not specified)",
@@ -234,64 +312,117 @@ def _build_prompt(commit: SelectedCommit) -> str:
 
 
 def _parse_sections(raw: str) -> dict[str, str]:
-    sections = {"WHAT_CHANGED": "", "WHAT_PROMPTED_IT": "", "TAKEAWAY": ""}
+    sections = {
+        "WHAT_CHANGED": "",
+        "WHAT_PROMPTED_IT": "",
+        "TAKEAWAY": "",
+    }
+
     pattern = re.compile(
         r"WHAT_CHANGED:\s*(?P<changed>.*?)\s*"
         r"WHAT_PROMPTED_IT:\s*(?P<prompted>.*?)\s*"
         r"TAKEAWAY:\s*(?P<takeaway>.*)",
         re.DOTALL,
     )
-    m = pattern.search(raw)
-    if m:
-        sections["WHAT_CHANGED"] = m.group("changed").strip()
-        sections["WHAT_PROMPTED_IT"] = m.group("prompted").strip()
-        sections["TAKEAWAY"] = m.group("takeaway").strip()
+
+    match = pattern.search(raw)
+
+    if match:
+        sections["WHAT_CHANGED"] = match.group("changed").strip()
+        sections["WHAT_PROMPTED_IT"] = match.group("prompted").strip()
+        sections["TAKEAWAY"] = match.group("takeaway").strip()
     else:
-        # Model didn't follow format — fall back to putting everything in
-        # WHAT_CHANGED so nothing silently disappears; caller can flag for review.
+        # Model did not follow the required format.
+        # Keep the output instead of silently discarding it.
         sections["WHAT_CHANGED"] = raw.strip()
+
     return sections
 
 
 class NarrativeGenerator:
-    def __init__(self, model: ModelInterface, max_retries: int = 2):
+    """
+    Generates narrative sections through the shared ModelProvider interface.
+
+    No Gemini, Bob, or other provider SDK is referenced here.
+    """
+
+    def __init__(
+        self,
+        model: ModelProvider,
+        max_retries: int = 2,
+    ):
         self.model = model
         self.max_retries = max_retries
 
-    def generate_stop_narrative(self, commit: SelectedCommit) -> dict[str, str]:
-        source_excerpts = commit.pr.excerpts if commit.pr else []
+    def generate_stop_narrative(
+        self,
+        commit: SelectedCommit,
+    ) -> dict[str, str]:
+        source_excerpts = (
+            commit.pr.excerpts
+            if commit.pr
+            else []
+        )
+
         prompt = _build_prompt(commit)
 
-        last_sections = None
+        last_sections: Optional[dict[str, str]] = None
+
         for attempt in range(self.max_retries + 1):
-            raw = self.model.call_model(prompt)
+            # IMPORTANT:
+            # Person 4 calls only the shared provider abstraction.
+            raw = self.model.generate(prompt)
+
             sections = _parse_sections(raw)
+
             combined = " ".join(sections.values())
 
-            if not violates_verbatim_rule(combined, source_excerpts):
+            if not violates_verbatim_rule(
+                combined,
+                source_excerpts,
+            ):
                 return sections
 
             last_sections = sections
-            # Escalate the instruction on retry
+
+            # Escalate the instruction on retry.
             prompt = (
-                "Your previous answer copied wording too closely from the source. "
-                "Rewrite fully in your own words, changing sentence structure, "
-                "with no run of more than a few words matching the source text.\n\n"
+                "Your previous answer copied wording too closely from the "
+                "source. Rewrite fully in your own words, changing sentence "
+                "structure, with no run of more than a few words matching "
+                "the source text.\n\n"
                 + prompt
             )
 
-        # Exhausted retries: strip anything that still overlaps rather than
-        # ship a verbatim fragment.
-        return self._sanitize(last_sections, source_excerpts)
+        # Exhausted retries: sanitize anything that still overlaps.
+        return self._sanitize(
+            last_sections or {
+                "WHAT_CHANGED": "",
+                "WHAT_PROMPTED_IT": "",
+                "TAKEAWAY": "",
+            },
+            source_excerpts,
+        )
 
     @staticmethod
-    def _sanitize(sections: dict[str, str], source_excerpts: list[str]) -> dict[str, str]:
-        safe = {}
+    def _sanitize(
+        sections: dict[str, str],
+        source_excerpts: list[str],
+    ) -> dict[str, str]:
+        safe: dict[str, str] = {}
+
         for key, text in sections.items():
-            if violates_verbatim_rule(text, source_excerpts):
-                safe[key] = "[content withheld: could not paraphrase below the verbatim-overlap threshold — flag for manual review]"
+            if violates_verbatim_rule(
+                text,
+                source_excerpts,
+            ):
+                safe[key] = (
+                    "[content withheld: could not paraphrase below the "
+                    "verbatim-overlap threshold — flag for manual review]"
+                )
             else:
                 safe[key] = text
+
         return safe
 
 
@@ -299,25 +430,43 @@ class NarrativeGenerator:
 # 7. Tour assembly
 # ---------------------------------------------------------------------------
 
+
 def build_tour(
     commits: Iterable[SelectedCommit],
-    model: ModelInterface,
+    model: ModelProvider,
     mode: OrderMode = "chronological",
     subsystem_order: Optional[list[str]] = None,
 ) -> list[TourStop]:
-    ordered = order_commits(commits, mode=mode, subsystem_order=subsystem_order)
+    """Order commits and generate a narrative stop for each one."""
+
+    ordered = order_commits(
+        commits,
+        mode=mode,
+        subsystem_order=subsystem_order,
+    )
+
     generator = NarrativeGenerator(model)
 
     stops: list[TourStop] = []
-    for i, commit in enumerate(ordered, start=1):
+
+    for index, commit in enumerate(ordered, start=1):
         sections = generator.generate_stop_narrative(commit)
+
         stops.append(
             TourStop(
-                order=i,
+                order=index,
                 commit_hash=commit.commit_hash,
                 commit_url=commit.commit_url,
-                pr_number=commit.pr.pr_number if commit.pr else None,
-                pr_url=commit.pr.pr_url if commit.pr else None,
+                pr_number=(
+                    commit.pr.pr_number
+                    if commit.pr
+                    else None
+                ),
+                pr_url=(
+                    commit.pr.pr_url
+                    if commit.pr
+                    else None
+                ),
                 subsystem=commit.subsystem,
                 timestamp=commit.timestamp,
                 what_changed=sections["WHAT_CHANGED"],
@@ -325,59 +474,112 @@ def build_tour(
                 new_hire_takeaway=sections["TAKEAWAY"],
             )
         )
+
     return stops
 
 
-def tour_to_json(stops: list[TourStop], mode: OrderMode) -> str:
+def tour_to_json(
+    stops: list[TourStop],
+    mode: OrderMode,
+) -> str:
+    """Serialize the finished tour for Person 5."""
+
     payload = {
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "order_mode": mode,
         "stop_count": len(stops),
-        "stops": [s.to_dict() for s in stops],
+        "stops": [stop.to_dict() for stop in stops],
     }
-    return json.dumps(payload, indent=2)
+
+    return json.dumps(
+        payload,
+        indent=2,
+    )
 
 
 # ---------------------------------------------------------------------------
-# 8. Example / smoke test (uses the stub model — swap for the real one)
+# 8. Example / smoke test
 # ---------------------------------------------------------------------------
+# Uses the local EchoStubModel only for standalone testing.
+# The actual application should inject Person 6's real ModelProvider.
+
 
 if __name__ == "__main__":
     sample_commits = [
         SelectedCommit(
             commit_hash="a1b2c3d",
-            commit_url="https://github.com/death7654/GitLens/commit/a1b2c3d",
+            commit_url=(
+                "https://github.com/death7654/GitLens/commit/a1b2c3d"
+            ),
             message="Switch session tokens to rotating refresh tokens",
             author="alice",
             timestamp="2025-03-01T10:00:00",
             subsystem="auth",
-            files_changed=["auth/session.py", "auth/tokens.py"],
-            diff_summary="Replaced long-lived JWTs with short-lived access tokens plus a refresh flow.",
+            files_changed=[
+                "auth/session.py",
+                "auth/tokens.py",
+            ],
+            diff_summary=(
+                "Replaced long-lived JWTs with short-lived access tokens "
+                "plus a refresh flow."
+            ),
             pr=PRDiscussion(
                 pr_number=142,
-                pr_url="https://github.com/death7654/GitLens/pull/142",
+                pr_url=(
+                    "https://github.com/death7654/GitLens/pull/142"
+                ),
                 excerpts=[
-                    "we kept seeing tokens leak through logs because they lived for 30 days",
-                    "rotating refresh tokens cut our exposure window down to about 15 minutes",
+                    (
+                        "we kept seeing tokens leak through logs because "
+                        "they lived for 30 days"
+                    ),
+                    (
+                        "rotating refresh tokens cut our exposure window "
+                        "down to about 15 minutes"
+                    ),
                 ],
             ),
         ),
         SelectedCommit(
             commit_hash="e4f5g6h",
-            commit_url="https://github.com/death7654/GitLens/commit/e4f5g6h",
+            commit_url=(
+                "https://github.com/death7654/GitLens/commit/e4f5g6h"
+            ),
             message="Add idempotency keys to billing webhook handler",
             author="bob",
             timestamp="2025-02-15T09:00:00",
             subsystem="billing",
-            files_changed=["billing/webhooks.py"],
-            diff_summary="Webhook handler now dedupes on a client-supplied idempotency key.",
+            files_changed=[
+                "billing/webhooks.py",
+            ],
+            diff_summary=(
+                "Webhook handler now dedupes on a client-supplied "
+                "idempotency key."
+            ),
             pr=PRDiscussion(
                 pr_number=98,
-                pr_url="https://github.com/death7654/GitLens/pull/98",
-                excerpts=["stripe retries the same webhook multiple times and we were double-charging"],
+                pr_url=(
+                    "https://github.com/death7654/GitLens/pull/98"
+                ),
+                excerpts=[
+                    (
+                        "stripe retries the same webhook multiple times "
+                        "and we were double-charging"
+                    ),
+                ],
             ),
         ),
     ]
 
-    stops = build_tour(sample_commits, model=EchoStubModel(), mode="chronological")
-    print(tour_to_json(stops, mode="chronological"))
+    stops = build_tour(
+        sample_commits,
+        model=EchoStubModel(),
+        mode="chronological",
+    )
+
+    print(
+        tour_to_json(
+            stops,
+            mode="chronological",
+        )
+    )
