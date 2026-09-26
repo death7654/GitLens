@@ -1322,6 +1322,7 @@ dependencies = [
 name = "gitlens"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "chrono",
  "git2",
  "regex",
