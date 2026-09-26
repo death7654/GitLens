@@ -58,6 +58,36 @@ async function runExtraction() {
   }
 }
 
+// --- Auto tree discovery ---
+// Reads the repo's HEAD tree and turns its top-level directories into
+// candidate subsystems, so the user doesn't have to guess path_prefixes
+// against a repo they haven't opened in an editor. Only fills in the
+// subsystems textarea (never touches repo path / age / commit-cap fields),
+// and the result is still just a starting point the user can hand-edit
+// before running extraction — discovery doesn't run extraction itself.
+async function discoverSubsystems() {
+  const statusEl = document.querySelector("#discover-status");
+  const repoPath = document.querySelector("#repo-path-input").value.trim();
+
+  if (!repoPath) {
+    statusEl.textContent = "Enter a repo path first.";
+    return;
+  }
+
+  statusEl.textContent = "Scanning repo tree...";
+
+  try {
+    const subsystems = await invoke("discover_repo_subsystems", { repoPath });
+    document.querySelector("#subsystems-input").value = JSON.stringify(subsystems, null, 2);
+    statusEl.textContent = subsystems.length
+      ? `Found ${subsystems.length} candidate subsystem(s) — review the prefixes below before running extraction.`
+      : "No subsystems found (empty repo, or everything at root was filtered out).";
+  } catch (err) {
+    statusEl.textContent =
+      "Discovery failed: " + (typeof err === "string" ? err : JSON.stringify(err));
+  }
+}
+
 window.addEventListener("DOMContentLoaded", () => {
   greetInputEl = document.querySelector("#greet-input");
   greetMsgEl = document.querySelector("#greet-msg");
@@ -69,5 +99,9 @@ window.addEventListener("DOMContentLoaded", () => {
   document.querySelector("#mining-form").addEventListener("submit", (e) => {
     e.preventDefault();
     runExtraction();
+  });
+
+  document.querySelector("#discover-subsystems-btn").addEventListener("click", () => {
+    discoverSubsystems();
   });
 });

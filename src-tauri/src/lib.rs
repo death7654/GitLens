@@ -12,7 +12,8 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
             greet,
-            git_mining::extract_git_history
+            git_mining::extract_git_history,
+            git_mining::discover_repo_subsystems
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
