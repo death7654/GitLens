@@ -34,6 +34,67 @@
         <button type="submit">Greet</button>
       </form>
       <p id="greet-msg"></p>
+
+      <hr style="margin: 2em 0; opacity: 0.3" />
+
+      <h2>Git History Extraction — test panel</h2>
+      <p style="max-width: 640px; margin: 0 auto 1em">
+        Point this at a local git repo and run the Person 1 extraction
+        pipeline. Subsystems are edited as JSON below; edit the array to
+        match paths that actually exist in the repo you test with.
+      </p>
+
+      <form id="mining-form" style="max-width: 640px; margin: 0 auto; text-align: left">
+        <label style="display: block; margin-bottom: 0.5em">
+          Repo path (local filesystem path to a git repo)
+          <input
+            id="repo-path-input"
+            style="width: 100%; margin-top: 0.25em"
+            placeholder="/home/you/some-cloned-repo"
+          />
+        </label>
+
+        <label style="display: block; margin-bottom: 0.5em">
+          Subsystems (JSON array of { name, path_prefixes })
+          <textarea
+            id="subsystems-input"
+            rows="6"
+            style="width: 100%; margin-top: 0.25em; font-family: monospace; font-size: 0.85em"
+          >[
+  { "name": "frontend", "path_prefixes": ["src/", "index.html", "styles.css", "main.js"] },
+  { "name": "backend", "path_prefixes": ["src-tauri/"] }
+]</textarea
+          >
+        </label>
+
+        <div class="row" style="gap: 0.5em; justify-content: flex-start">
+          <label>
+            Max age (days)
+            <input id="max-age-input" type="number" value="730" style="width: 6em" />
+          </label>
+          <label>
+            Max commits / subsystem
+            <input id="max-commits-input" type="number" value="200" style="width: 6em" />
+          </label>
+          <button type="submit">Run extraction</button>
+        </div>
+      </form>
+
+      <p id="mining-status"></p>
+      <pre
+        id="mining-output"
+        style="
+          text-align: left;
+          max-width: 900px;
+          margin: 1em auto;
+          max-height: 500px;
+          overflow: auto;
+          background: #00000010;
+          padding: 1em;
+          border-radius: 8px;
+          font-size: 0.8em;
+        "
+      ></pre>
     </main>
   </body>
 </html>
