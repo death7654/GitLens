@@ -1,18 +1,37 @@
 <!doctype html>
 <html lang="en">
-<head><meta charset="UTF-8"/><meta name="viewport" content="width=device-width,initial-scale=1.0"/><meta name="theme-color" content="#11130f"/><title>GitLens — local repository explorer</title><link rel="stylesheet" href="/styles.css"/><script type="module" src="/main.js" defer></script></head>
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="theme-color" content="#111827" />
+  <title>GitLens — repository workspace</title>
+  <link rel="stylesheet" href="/styles.css" />
+  <script type="module" src="/main.js" defer></script>
+</head>
 <body>
-<div class="app-shell">
-  <header class="topbar"><a class="brand" href="#"><span class="brand-mark">✦</span><span>gitlens</span><small>LOCAL REPOSITORY EXPLORER</small></a><div class="topbar-right"><span class="local-pill"><i></i> local first</span><button class="icon-button" id="theme-toggle" aria-label="Toggle theme">◐</button></div></header>
-  <main>
-    <section class="welcome" id="welcome"><div class="welcome-copy"><p class="eyebrow">A quiet window into your code</p><h1>Understand the<br/><em>shape of change.</em></h1><p class="lede">Point GitLens at a local folder. Browse its files, inspect the details, and pull the latest changes when you are ready.</p><button class="primary-button" id="choose-folder"><span>Choose a folder</span><b>↗</b></button><p class="privacy-note"><span>⌁</span> Nothing leaves your machine until you ask Git to pull.</p></div><div class="welcome-art"><div class="art-ring ring-a"></div><div class="art-ring ring-b"></div><div class="art-ring ring-c"></div><div class="art-dot"></div><span class="art-label label-a">your files</span><span class="art-label label-b">your history</span><span class="art-label label-c">your context</span></div></section>
-    <section class="workspace" id="workspace" hidden>
-      <div class="workspace-head"><div class="repo-heading"><span class="repo-icon">⌂</span><div><p class="eyebrow">Selected folder</p><h2 id="repo-name">Repository</h2><code id="repo-path">/path/to/folder</code></div></div><div class="repo-actions"><button class="secondary-button" id="change-folder">Change folder</button><button class="pull-button" id="git-pull"><span class="pull-symbol">↓</span> Git pull</button></div></div>
-      <div class="repo-stats"><div><span>branch</span><strong id="repo-branch">—</strong></div><div><span>working tree</span><strong id="repo-clean">—</strong></div><div><span>latest commit</span><strong id="repo-commit">—</strong></div><div><span>visible items</span><strong id="repo-count">—</strong></div></div>
-      <div class="explorer"><aside class="file-panel"><div class="panel-title"><span>Explorer</span><small id="file-count">0 items</small></div><div class="file-list" id="file-list"></div></aside><section class="preview-panel"><div class="preview-head"><div><span class="file-kind" id="preview-kind">FILE PREVIEW</span><h3 id="preview-name">Select a file</h3></div><span id="preview-size"></span></div><pre id="file-preview"><span class="empty-preview">Choose a file from the explorer to inspect it here.</span></pre></section></div>
-      <div class="activity"><div class="activity-title"><span>Activity</span><small>session log</small></div><div class="activity-log" id="activity-log"><p><i>•</i> Ready to explore this folder.</p></div></div>
-    </section>
-    <section class="features" id="features"><div class="feature-intro"><p class="eyebrow">Built for local thinking</p><h2>Your codebase,<br/><em>without the noise.</em></h2></div><div class="feature-grid"><article><span>01</span><h3>Stay close to the source</h3><p>Files are read directly from your machine. No upload, no account, no mystery layer between you and the code.</p></article><article><span>02</span><h3>Pull when you decide</h3><p>Run a fast-forward-only Git pull from the app and see the result in a clear, readable activity log.</p></article><article><span>03</span><h3>Works where you work</h3><p>Responsive CSS and conservative browser APIs keep the experience steady across Windows WebView2 and Linux WebKitGTK.</p></article></div></section>
-  </main><footer><span class="brand-mark">✦</span><span>gitlens / local by default</span><span>built for curious teams</span></footer>
-</div><div class="toast" id="toast" role="status"></div>
-</body></html>
+  <div class="app-shell">
+    <header class="topbar">
+      <a class="brand" href="#"><span class="brand-mark">✦</span><span>gitlens</span></a>
+      <div class="topbar-center"><span class="traffic-dot green"></span><span>Local workspace</span><span class="slash">/</span><span id="topbar-repo">No repository open</span></div>
+      <div class="topbar-right"><span class="local-pill"><i></i> Offline ready</span><button class="icon-button" id="theme-toggle" aria-label="Toggle theme">◐</button></div>
+    </header>
+    <div class="app-body">
+      <aside class="sidebar">
+        <div class="sidebar-section"><p class="sidebar-label">Workspace</p><button class="nav-item active"><span class="nav-icon">⌂</span>Overview</button><button class="nav-item" id="sidebar-files"><span class="nav-icon">▤</span>Files <span class="nav-count" id="sidebar-count">—</span></button><button class="nav-item"><span class="nav-icon">⌁</span>History</button></div>
+        <div class="sidebar-section repo-section"><p class="sidebar-label">Repository</p><button class="repo-shortcut" id="sidebar-repo"><span class="repo-mini-icon">⌘</span><span><strong id="sidebar-repo-name">Choose a folder</strong><small id="sidebar-repo-path">Open a local repository</small></span></button></div>
+        <div class="sidebar-bottom"><button class="nav-item"><span class="nav-icon">⚙</span>Preferences</button><p class="version">GitLens v0.1.0 <span>•</span> local first</p></div>
+      </aside>
+      <main class="main-content">
+        <section class="empty-state" id="welcome"><div class="empty-icon">✦</div><p class="eyebrow">Your local workspace</p><h1>Open a repository<br /><em>to get started.</em></h1><p class="lede">Browse files, inspect source, and keep an eye on changes from one focused workspace.</p><button class="primary-button" id="choose-folder"><span>Choose a folder</span><b>⌘ O</b></button><p class="privacy-note"><span>⌁</span> Files stay on your machine.</p></section>
+        <section class="workspace" id="workspace" hidden>
+          <div class="page-heading"><div><p class="eyebrow">Repository overview</p><h1 id="repo-name">Repository</h1><code id="repo-path">/path/to/folder</code></div><div class="repo-actions"><button class="secondary-button" id="change-folder">Change folder</button><button class="pull-button" id="git-pull"><span class="pull-symbol">↓</span> Git pull</button></div></div>
+          <div class="repo-stats"><div><span>Current branch</span><strong id="repo-branch">—</strong></div><div><span>Working tree</span><strong id="repo-clean">—</strong></div><div><span>Latest commit</span><strong id="repo-commit">—</strong></div><div><span>Visible items</span><strong id="repo-count">—</strong></div></div>
+          <div class="section-heading"><div><h2>Repository files</h2><p>Inspect source directly from your machine.</p></div><button class="ghost-button" id="refresh-view">↻ Refresh</button></div>
+          <div class="explorer"><aside class="file-panel"><div class="panel-title"><span>Explorer</span><small id="file-count">0 items</small></div><div class="file-list" id="file-list"></div></aside><section class="preview-panel"><div class="preview-head"><div><span class="file-kind" id="preview-kind">FILE PREVIEW</span><h3 id="preview-name">Select a file</h3></div><span id="preview-size"></span></div><pre id="file-preview"><span class="empty-preview">Choose a file from the explorer to inspect it here.</span></pre></section></div>
+          <div class="activity"><div class="activity-title"><span>Recent activity</span><small>session log</small></div><div class="activity-log" id="activity-log"><p><i>•</i> Ready to explore this folder.</p></div></div>
+        </section>
+      </main>
+    </div>
+  </div><div class="toast" id="toast" role="status"></div>
+</body>
+</html>
