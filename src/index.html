@@ -47,12 +47,12 @@
       <form id="mining-form" style="max-width: 640px; margin: 0 auto; text-align: left">
         <label style="display: block; margin-bottom: 0.5em">
           Repo path (local filesystem path to a git repo)
-          <input
-            id="repo-path-input"
-            style="width: 100%; margin-top: 0.25em"
-            placeholder="/home/you/some-cloned-repo"
-          />
+          <span class="row" style="gap: 0.5em; justify-content: flex-start; margin-top: 0.25em">
+            <input id="repo-path-input" style="flex: 1" placeholder="/home/you/some-cloned-repo" />
+            <button type="button" id="discover-subsystems-btn">Discover subsystems</button>
+          </span>
         </label>
+        <p id="discover-status" style="margin: 0 0 0.5em; font-size: 0.85em; opacity: 0.75"></p>
 
         <label style="display: block; margin-bottom: 0.5em">
           Subsystems (JSON array of { name, path_prefixes })

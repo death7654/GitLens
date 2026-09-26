@@ -18,6 +18,8 @@ mod types;
 mod heuristics;
 #[path = "git_mining_worker.rs"]
 mod worker;
+#[path = "git_mining_discovery.rs"]
+mod discovery;
 
 // These re-exports are the module's public surface (config/result types a
 // caller builds or reads); several aren't referenced by name inside this
@@ -27,6 +29,8 @@ pub use types::{
     CommitRecord, FileChange, HeuristicFlags, MiningConfig, MiningOutput, MiningWindow,
     SubsystemDef,
 };
+#[allow(unused_imports)]
+pub use discovery::discover_subsystems;
 
 use std::collections::HashMap;
 
@@ -119,6 +123,21 @@ pub async fn extract_git_history(config: MiningConfig) -> Result<MiningOutput, S
     tauri::async_runtime::spawn_blocking(move || run_extraction(&config))
         .await
         .map_err(|e| format!("extraction task panicked: {e}"))?
+}
+
+/// The Tauri IPC command Person 5's frontend calls to auto-discover a
+/// repo's top-level directory layout as candidate subsystems, so the user
+/// doesn't have to hand-type `path_prefixes` against paths they'd otherwise
+/// have to go check for themselves. Meant to be called right after the
+/// repo path field is filled in, before the user edits the subsystems JSON
+/// by hand.
+#[tauri::command]
+pub async fn discover_repo_subsystems(repo_path: String) -> Result<Vec<SubsystemDef>, String> {
+    // Same rationale as extract_git_history: git2 does blocking I/O, so run
+    // it off the async runtime Tauri commands execute on.
+    tauri::async_runtime::spawn_blocking(move || discovery::discover_subsystems(&repo_path))
+        .await
+        .map_err(|e| format!("discovery task panicked: {e}"))?
 }
 
 #[cfg(test)]
