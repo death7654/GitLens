@@ -25,5 +25,8 @@ git2 = { version = "0.19", default-features = false }
 regex = "1"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 
+# --- Person 3: Significance Ranking (stable cache keys) ---
+sha2 = "0.10"
+
 [dev-dependencies]
 tempfile = "3"
