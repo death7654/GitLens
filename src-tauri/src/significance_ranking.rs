@@ -8,6 +8,25 @@
 //!   4. Ranking ★             — map per-candidate → reduce to top N
 //!   5. Post-process          — validate → noise → diversity → refill
 //!   6. Emit                  — RankingOutput
+//!
+//! # Output-shape tolerance
+//!
+//! `parse_ranking_response` accepts four shapes for the ranking result:
+//!
+//!   1. `{"candidates": [ {...}, ... ]}` — the prompt's requested shape, and
+//!      what cloud models with schema-enforced output reliably produce.
+//!   2. `[ {...}, ... ]`                  — a bare top-level array.  Observed
+//!      with gemma3-through-llama.cpp: the server's
+//!      `response_format: json_object` flag enforces "valid JSON" but not the
+//!      wrapper object the prompt described, and open-weight models frequently
+//!      emit the inner array directly.
+//!   3. `{"items": [...]}`               — common alternative wrapper key.
+//!   4. `{"results": [...]}`             — other common alternative wrapper key.
+//!
+//! All four carry the same per-candidate objects, so normalisation lives in
+//! the parser rather than in every downstream consumer.  When the shape is
+//! unrecognisable, the error names the actual top-level keys so a human can
+//! diagnose the failure from the log alone.
 
 use regex::Regex;
 use std::cmp::Ordering;
@@ -327,11 +346,43 @@ fn ranking_response_schema() -> serde_json::Value {
     })
 }
 
+/// Parse the ranking response into a scored-candidate list.
+///
+/// Tolerates four shapes for the top-level value:
+///
+///   1. `{"candidates": [ ... ]}` — what the prompt asks for, and what cloud
+///      models with schema-enforced output reliably produce.
+///   2. `[ ... ]`                  — a bare array.  Observed with
+///      gemma3-through-llama.cpp: the server's
+///      `response_format: json_object` flag enforces "valid JSON" but not the
+///      wrapper object the prompt described, and open-weight models frequently
+///      emit the inner array directly.
+///   3. `{"items": [...]}`         — common alternative wrapper key.
+///   4. `{"results": [...]}`       — other common alternative wrapper key.
+///
+/// All four carry the same per-candidate objects, so normalisation lives
+/// here rather than in every downstream consumer.  When the shape is
+/// unrecognisable, the error names the actual top-level keys so a human can
+/// diagnose the failure from the log alone.
 fn parse_ranking_response(v: &serde_json::Value) -> Result<Vec<ModelScoredCandidate>, String> {
-    let arr = v
-        .get("candidates")
-        .and_then(|c| c.as_array())
-        .ok_or_else(|| "response missing 'candidates' array".to_string())?;
+    let arr: &Vec<serde_json::Value> = if let Some(a) = v.as_array() {
+        a
+    } else if let Some(a) = v.get("candidates").and_then(|c| c.as_array()) {
+        a
+    } else if let Some(a) = v.get("items").and_then(|c| c.as_array()) {
+        a
+    } else if let Some(a) = v.get("results").and_then(|c| c.as_array()) {
+        a
+    } else {
+        return Err(format!(
+            "ranking response was not an array and had no 'candidates' array; \
+             got top-level keys: {:?}",
+            v.as_object()
+                .map(|o| o.keys().collect::<Vec<_>>())
+                .unwrap_or_default()
+        ));
+    };
+
     let mut out = Vec::with_capacity(arr.len());
     for item in arr {
         let h = item
@@ -399,29 +450,35 @@ pub async fn run_ranking(
         // Stage 2 — per-commit summaries (disk-cached; uses Stage 1 output when
         // available, degrades to message + file list otherwise). All commits
         // are summarised concurrently — cached ones return immediately.
+        //
+        // `file_summaries_ref` is bound *outside* the closure so each
+        // `async move` block captures a `Copy`-able `&HashMap` rather than
+        // trying to move the whole map out on the first iteration.
         if cfg.use_commit_summaries {
-            // Bind a shared reference before the closure so each `async move`
-            // block captures a `Copy`-able `&HashMap` instead of trying to
-            // move the whole map out on every iteration.
             let file_summaries_ref = &file_summaries;
-            let futs: Vec<_> = candidates.iter().map(|c| {
-                let hash = c.commit.hash.clone();
-                let model_id = cfg.model_id.clone();
-                async move {
-                    let result = significance_ranking_stages::summarize_commit(
-                        c,
-                        file_summaries_ref,
-                        cache_root,
-                        provider,
-                        &model_id,
-                    )
-                    .await;
-                    (hash, result)
-                }
-            }).collect();
+            let futs: Vec<_> = candidates
+                .iter()
+                .map(|c| {
+                    let hash = c.commit.hash.clone();
+                    let model_id = cfg.model_id.clone();
+                    async move {
+                        let result = significance_ranking_stages::summarize_commit(
+                            c,
+                            file_summaries_ref,
+                            cache_root,
+                            provider,
+                            &model_id,
+                        )
+                        .await;
+                        (hash, result)
+                    }
+                })
+                .collect();
             for (hash, result) in futures::future::join_all(futs).await {
                 match result {
-                    Ok(s) => { commit_summaries.insert(hash, s); }
+                    Ok(s) => {
+                        commit_summaries.insert(hash, s);
+                    }
                     Err(e) => eprintln!("[p3] commit summary skipped {hash}: {e}"),
                 }
             }
@@ -491,6 +548,7 @@ pub async fn run_ranking(
         },
     })
 }
+
 // ---------- Tauri IPC command ----------
 
 /// Person 5's frontend calls this after P1's extraction (and P2's enrichment,
@@ -569,6 +627,8 @@ mod tests {
         }
     }
 
+    // -- pre-existing post_process tests -------------------------------------
+
     #[test]
     fn noise_filter_drops_lockfile_only_commits() {
         let c = mk("h1", "update deps", &["backend"], &["Cargo.lock"]);
@@ -603,8 +663,6 @@ mod tests {
 
     #[test]
     fn diversity_floor_prefers_spread() {
-        // 6 backend commits (score 0.9) + 2 frontend (score 0.1)
-        // with min_per_subsystem=2, both frontend entries should survive.
         let mut cands = vec![];
         let mut pool = vec![];
         for i in 0..6 {
@@ -627,12 +685,11 @@ mod tests {
 
     #[test]
     fn refill_from_noise_when_below_target_min() {
-        // All three candidates are noise-flagged ("chore:" messages). The
-        // non-noise pool is empty, so the only way to reach target_min=2 is
-        // to re-admit noise by score.
-        let mut cfg = RankingConfig::default();
-        cfg.target_min = 2;
-        cfg.target_max = 15;
+        let cfg = RankingConfig {
+            target_min: 2,
+            target_max: 15,
+            ..RankingConfig::default()
+        };
 
         let cands = vec![
             mk("n1", "chore: tidy", &["backend"], &["src/a.rs"]),
@@ -643,7 +700,6 @@ mod tests {
 
         let (out, below) = post_process(pool, &cands, &cfg);
         assert_eq!(out.len(), 2, "refill should top up to target_min");
-        // highest-scoring noise is ranked first after the final sort
         assert_eq!(out[0].commit_hash, "n1");
         assert_eq!(out[1].commit_hash, "n2");
         assert!(
@@ -654,12 +710,11 @@ mod tests {
 
     #[test]
     fn below_target_min_when_pool_exhausted() {
-        // Only two non-noise candidates exist in the pool, but target_min is
-        // five. Refill has nothing left to admit; the flag should report the
-        // shortfall.
-        let mut cfg = RankingConfig::default();
-        cfg.target_min = 5;
-        cfg.target_max = 15;
+        let cfg = RankingConfig {
+            target_min: 5,
+            target_max: 15,
+            ..RankingConfig::default()
+        };
 
         let cands = vec![
             mk("a", "Fix race in scheduler", &["backend"], &["src/a.rs"]),
@@ -669,9 +724,105 @@ mod tests {
 
         let (out, below) = post_process(pool, &cands, &cfg);
         assert_eq!(out.len(), 2);
+        assert!(below, "2 < target_min=5 should report below_target_min");
+    }
+
+    // ---------- parser shape tolerance --------------------------------------
+    //
+    // Regression tests for the "Ranking failed: response missing
+    // 'candidates' array" incident, caused by gemma3-through-llama.cpp
+    // emitting a bare top-level array instead of the wrapper object the
+    // prompt requested.
+
+    #[test]
+    fn parse_ranking_response_accepts_wrapped_object() {
+        let v = serde_json::json!({
+            "candidates": [
+                {
+                    "commit_hash": "xyz",
+                    "score": 0.5,
+                    "architecture_shaping": false,
+                    "rationale": "r",
+                    "evidence_summary": "e"
+                }
+            ]
+        });
+        let out = parse_ranking_response(&v).unwrap();
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].commit_hash, "xyz");
+    }
+
+    #[test]
+    fn parse_ranking_response_accepts_bare_array() {
+        // Regression: gemma3-through-llama.cpp returns a bare top-level array
+        // instead of `{"candidates": [...]}`.
+        let v = serde_json::json!([
+            {
+                "commit_hash": "abc",
+                "score": 0.85,
+                "architecture_shaping": true,
+                "rationale": "r",
+                "evidence_summary": "e"
+            },
+            {
+                "commit_hash": "def",
+                "score": 0.30,
+                "architecture_shaping": false,
+                "rationale": "r2",
+                "evidence_summary": "e2"
+            }
+        ]);
+        let out = parse_ranking_response(&v).unwrap();
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0].commit_hash, "abc");
+        assert_eq!(out[1].commit_hash, "def");
+        assert!((out[0].score - 0.85).abs() < 1e-6);
+    }
+
+    #[test]
+    fn parse_ranking_response_accepts_items_wrapper() {
+        let v = serde_json::json!({
+            "items": [
+                {
+                    "commit_hash": "q1",
+                    "score": 0.6,
+                    "architecture_shaping": false,
+                    "rationale": "r",
+                    "evidence_summary": "e"
+                }
+            ]
+        });
+        let out = parse_ranking_response(&v).unwrap();
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].commit_hash, "q1");
+    }
+
+    #[test]
+    fn parse_ranking_response_accepts_results_wrapper() {
+        let v = serde_json::json!({
+            "results": [
+                {
+                    "commit_hash": "r1",
+                    "score": 0.4,
+                    "architecture_shaping": false,
+                    "rationale": "r",
+                    "evidence_summary": "e"
+                }
+            ]
+        });
+        let out = parse_ranking_response(&v).unwrap();
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].commit_hash, "r1");
+    }
+
+    #[test]
+    fn parse_ranking_response_rejects_unknown_shape_with_diagnostic() {
+        let v = serde_json::json!({ "answer": "I couldn't decide" });
+        let err = parse_ranking_response(&v).unwrap_err();
+        assert!(err.contains("was not an array"), "got: {err}");
         assert!(
-            below,
-            "2 < target_min=5 should report below_target_min"
+            err.contains("answer"),
+            "error should name the unexpected key; got: {err}"
         );
     }
 }
