@@ -2,10 +2,9 @@
  * commit_graph.js — Workstream E
  *
  * Renders a horizontal SVG timeline of all MiningOutput.commits.
- * Tour stops (those whose hash appears in rankingOutput.tour_candidates) are
- * drawn as coloured circles; background commits are small grey dots.
- * Clicking a highlighted circle dispatches a CustomEvent('tourNavigate')
- * or calls window.showTourStop if available.
+ * Tour-selected commits (hash in rankingOutput.tour_candidates) are drawn as
+ * coloured circles; background commits are small grey dots.
+ * Clicking a highlighted circle navigates to that tour stop.
  */
 
 /** @param {string} str @returns {string} */
@@ -88,10 +87,10 @@ window.renderCommitGraph = function renderCommitGraph() {
     return ta < tb ? -1 : ta > tb ? 1 : 0;
   });
 
-  const W = 800; // internal SVG coordinate width
-  const H = 80;
-  const CY = 40;       // vertical centre
-  const PAD = 24;      // horizontal padding
+  const W = 800;
+  const H = 84;
+  const CY = 42;
+  const PAD = 28;
 
   const minTs = new Date(commits[0].timestamp_utc || 0).getTime();
   const maxTs = new Date(commits[commits.length - 1].timestamp_utc || 0).getTime();
@@ -122,18 +121,17 @@ window.renderCommitGraph = function renderCommitGraph() {
       fgCircles.push(
         `<circle class="vz-dot-selected" cx="${x}" cy="${CY}" r="${r}" fill="${esc(color)}" ` +
         `data-hash="${esc(hashShort)}" data-rank="${rank}" data-summary="${summary}" ` +
-        `stroke="#fff" stroke-width="2" style="cursor:pointer" />`
+        `stroke="var(--surface,#fff)" stroke-width="2.5" style="cursor:pointer" />`
       );
     } else {
       bgCircles.push(
-        `<circle cx="${x}" cy="${CY}" r="3" fill="#9ca3af" opacity="0.4" />`
+        `<circle cx="${x}" cy="${CY}" r="2.5" fill="var(--muted,#9ca3af)" opacity="0.35" />`
       );
     }
   });
 
-  // Timeline base line
   const baseLine = `<line x1="${PAD}" y1="${CY}" x2="${W - PAD}" y2="${CY}" ` +
-    `stroke="#e5e7eb" stroke-width="1.5" />`;
+    `stroke="var(--line,#e3e8ef)" stroke-width="1.5" />`;
 
   const svgContent = baseLine + bgCircles.join('') + fgCircles.join('') + hitTargets.join('');
 

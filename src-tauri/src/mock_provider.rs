@@ -1,39 +1,43 @@
-//! Person 3 — test-only `ModelProvider`.
+//! Test-only `ModelProvider`.
 //!
-//! Returns a shape that matches each request's schema by filling every
-//! `required` field with a placeholder. Good enough to smoke-test the
-//! pipeline end-to-end before P6's real provider lands. NOT for production.
+//! Returns a shape that matches each request's schema by delegating to
+//! `testing_api::dummy_response` — which handles file summaries, commit
+//! summaries, ranking (with real hash echoing), and prose calls.
 //!
-//! NARRATION EXTENSION (Workstream A):
-//! When the user prompt contains a `MOCK_TRIGGER:` hint line, the provider
-//! returns canned-but-realistic narration JSON keyed by trigger kind.
-//! If the prompt also contains `MOCK_FAIL_HASH` (the constant defined below),
-//! the call returns `Err` — allowing the partial-failure UI state to be
-//! triggered deliberately on camera.
+//! ## Hint lines (all optional, parsed from `req.user`)
+//!
+//! | Hint                   | Effect                                                        |
+//! |------------------------|---------------------------------------------------------------|
+//! | `MOCK_TRIGGER: <kind>` | Returns canned narration JSON for the given `TriggerKind`.   |
+//! | `MOCK_FAIL_HASH`       | Always returns `Err` — triggers the partial-failure UI path. |
+//! | `MOCK_LATENCY_MS: <n>` | Sleeps for `n` milliseconds before responding.               |
+//!
+//! `MOCK_FAIL_HASH` is checked before any other dispatch so it reliably fires
+//! regardless of which other hints are present.
 //!
 //! The `MOCK_TRIGGER:` parsing and canned responses live ONLY in this file.
 //! They must not leak into `TriggerKind` or any production schema.
+//!
+//! NOT for production use.
 
 use crate::provider::{ModelProvider, ModelRequest, ModelResponse};
 use crate::testing_api;
 
-/// Hardcoded hash that always causes `MockProvider::call` to return `Err`
-/// when a `MOCK_TRIGGER:` hint is present. Workstream D must ensure this hash
-/// is produced by a fixture commit with pinned dates so it is stable across
-/// machines.
+/// Hardcoded hash that always causes `MockProvider::call` to return `Err`.
+///
+/// Workstream D must ensure this hash is produced by a fixture commit with
+/// pinned dates so it is stable across machines.
 pub const MOCK_FAIL_HASH: &str = "0000000000000000000000000000000000000001";
 
 pub struct MockProvider;
 
-#[async_trait::async_trait]
-impl ModelProvider for MockProvider {
-    async fn call(&self, req: ModelRequest) -> Result<ModelResponse, String> {
-        Ok(testing_api::dummy_response(&req))
-    }
-}
+// ---------------------------------------------------------------------------
+// Canned narration responses
+// ---------------------------------------------------------------------------
+
 /// Returns a canned-but-realistic `{"title": ..., "narration": ...}` JSON
 /// value for the given trigger kind (snake_case). Used only by `MockProvider`.
-fn narration_response_for_trigger(trigger: &str) -> serde_json::Value {
+fn narration_for_trigger(trigger: &str) -> serde_json::Value {
     match trigger {
         "revert" => serde_json::json!({
             "title": "The rollback that revealed the real dependency",
@@ -106,6 +110,8 @@ fn narration_response_for_trigger(trigger: &str) -> serde_json::Value {
                           number of auth-related bug fixes dropped by roughly half in the \
                           following quarter."
         }),
+        // Explicit catch-all: unknown trigger kinds still return a valid shape
+        // so downstream JSON parsing never fails, but the title signals the miss.
         _ => serde_json::json!({
             "title": "A pivotal moment in the codebase's evolution",
             "narration": "This commit represents a decision point that shaped subsequent \
@@ -123,44 +129,47 @@ fn narration_response_for_trigger(trigger: &str) -> serde_json::Value {
     }
 }
 
-/// Extract the value of a line starting with `prefix:` from the given text.
-fn extract_hint(text: &str, prefix: &str) -> Option<String> {
-    for line in text.lines() {
-        let trimmed = line.trim();
-        if let Some(rest) = trimmed.strip_prefix(prefix) {
-            return Some(rest.trim().to_string());
-        }
-    }
-    None
+// ---------------------------------------------------------------------------
+// Hint extraction
+// ---------------------------------------------------------------------------
+
+/// Extract the value after `<prefix>` on any line of `text`.
+///
+/// Trims leading/trailing whitespace from both the prefix match and the value.
+/// Returns `None` if no line starts with `prefix`.
+fn extract_hint<'a>(text: &'a str, prefix: &str) -> Option<&'a str> {
+    text.lines().find_map(|line| {
+        line.trim()
+            .strip_prefix(prefix)
+            .map(str::trim)
+    })
 }
 
-fn placeholder(name: &str) -> serde_json::Value {
-    use serde_json::Value;
-    match name {
-        "provides" | "purpose" | "notes" | "what_changed" | "why" | "takeaway"
-        | "rationale" | "evidence_summary" | "summary" | "text" => Value::String(format!("[mock {name}]")),
-        "externals" | "functionalities" => Value::Array(vec![]),
-        "score" => Value::Number(serde_json::Number::from_f64(0.5).unwrap()),
-        "architecture_shaping" => Value::Bool(false),
-        "candidates" => Value::Array(vec![]),
-        _ => Value::String(format!("[mock {name}]")),
-    }
-}
+// ---------------------------------------------------------------------------
+// ModelProvider impl
+// ---------------------------------------------------------------------------
 
 #[async_trait::async_trait]
 impl ModelProvider for MockProvider {
     async fn call(&self, req: ModelRequest) -> Result<ModelResponse, String> {
-        // Check for MOCK_TRIGGER hint — narration path.
-        if let Some(trigger) = extract_hint(&req.user, "MOCK_TRIGGER:") {
-            // Check whether the prompt contains MOCK_FAIL_HASH.
-            if req.user.contains(MOCK_FAIL_HASH) {
-                return Err(format!(
-                    "mock: deliberate failure for demo (hash: {})",
-                    MOCK_FAIL_HASH
-                ));
-            }
+        // ── Guard: deliberate error path ─────────────────────────────────────
+        // Checked first so it fires regardless of which other hints are present.
+        if req.user.contains(MOCK_FAIL_HASH) {
+            return Err(format!(
+                "mock: deliberate failure for demo (hash: {MOCK_FAIL_HASH})"
+            ));
+        }
 
-            let v = narration_response_for_trigger(&trigger);
+        // ── Optional latency simulation ──────────────────────────────────────
+        if let Some(ms_str) = extract_hint(&req.user, "MOCK_LATENCY_MS:") {
+            if let Ok(ms) = ms_str.parse::<u64>() {
+                tokio::time::sleep(std::time::Duration::from_millis(ms)).await;
+            }
+        }
+
+        // ── Narration path ───────────────────────────────────────────────────
+        if let Some(trigger) = extract_hint(&req.user, "MOCK_TRIGGER:") {
+            let v = narration_for_trigger(trigger);
             let text = serde_json::to_string(&v).unwrap_or_default();
             return Ok(ModelResponse {
                 text,
@@ -171,34 +180,18 @@ impl ModelProvider for MockProvider {
             });
         }
 
-        // Fall-through: generic schema-based placeholder logic (for ranking etc.)
-        let v = match req.schema.as_ref()
-            .and_then(|s| s.get("required"))
-            .and_then(|r| r.as_array())
-        {
-            Some(fields) => {
-                let mut obj = serde_json::Map::new();
-                for f in fields {
-                    let name = f.as_str().unwrap_or("");
-                    obj.insert(name.to_string(), placeholder(name));
-                }
-                serde_json::Value::Object(obj)
-            }
-            None => serde_json::Value::String(format!("[mock prose for {}]", req.user.lines().next().unwrap_or(""))),
-        };
-        let text = match &v {
-            serde_json::Value::String(s) => s.clone(),
-            _ => serde_json::to_string(&v).unwrap_or_default(),
-        };
-        Ok(ModelResponse {
-            text,
-            parsed: Some(v),
-            model_id: req.model_id,
-            input_tokens: None,
-            output_tokens: None,
-        })
+        // ── Generic schema / prose path ──────────────────────────────────────
+        // Delegates to `testing_api::dummy_response`, which handles all schema
+        // variants (ranking with hash echoing, file summaries, commit summaries,
+        // prose) in a single authoritative place.
+        let resp = testing_api::dummy_response(&req);
+        Ok(resp)
     }
 }
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
@@ -216,50 +209,120 @@ mod tests {
         }
     }
 
+    // -- Narration triggers --------------------------------------------------
+
     #[tokio::test]
-    async fn test_mock_narration_revert_trigger() {
+    async fn narration_revert_trigger_has_title_and_narration() {
         let mut req = base_req();
-        req.user = "some context\nMOCK_TRIGGER: revert\nCOMMIT_HASH_FOR_MOCK: abc123".to_string();
+        req.user = "context\nMOCK_TRIGGER: revert\nCOMMIT_HASH: abc123".to_string();
         let resp = MockProvider.call(req).await.unwrap();
-        let parsed = resp.parsed.unwrap();
-        assert!(parsed.get("title").is_some());
-        assert!(parsed.get("narration").is_some());
-        let title = parsed["title"].as_str().unwrap();
-        assert!(!title.is_empty(), "title should be non-empty");
+        let p = resp.parsed.unwrap();
+        let title = p["title"].as_str().unwrap_or("");
+        let narration = p["narration"].as_str().unwrap_or("");
+        assert!(!title.is_empty(), "title must be non-empty");
+        assert!(!narration.is_empty(), "narration must be non-empty");
     }
 
     #[tokio::test]
-    async fn test_mock_narration_fail_hash() {
-        let mut req = base_req();
-        req.user = format!(
-            "MOCK_TRIGGER: incident_linked\nCOMMIT_HASH_FOR_MOCK: {}",
-            MOCK_FAIL_HASH
-        );
-        let result = MockProvider.call(req).await;
-        assert!(result.is_err(), "MOCK_FAIL_HASH should always return Err");
-        let err = result.unwrap_err();
-        assert!(err.contains("deliberate failure"), "error should mention deliberate failure");
-        assert!(err.contains(MOCK_FAIL_HASH));
-    }
-
-    #[tokio::test]
-    async fn test_mock_narration_all_trigger_kinds() {
-        for trigger in &["revert", "was_reverted", "repeated_fix", "incident_linked", "architecture_shaping", "unknown"] {
+    async fn narration_all_known_trigger_kinds_produce_valid_shapes() {
+        let triggers = [
+            "revert",
+            "was_reverted",
+            "repeated_fix",
+            "incident_linked",
+            "architecture_shaping",
+        ];
+        for trigger in triggers {
             let mut req = base_req();
-            req.user = format!("MOCK_TRIGGER: {trigger}\nCOMMIT_HASH_FOR_MOCK: goodhash");
-            let resp = MockProvider.call(req).await.unwrap();
-            let parsed = resp.parsed.unwrap();
-            assert!(parsed["title"].as_str().map(|s| !s.is_empty()).unwrap_or(false),
-                "trigger '{trigger}' should produce a non-empty title");
+            req.user = format!("MOCK_TRIGGER: {trigger}");
+            let resp = MockProvider.call(req).await.unwrap_or_else(|e| {
+                panic!("trigger '{trigger}' returned Err: {e}")
+            });
+            let p = resp.parsed.unwrap();
+            assert!(
+                p["title"].as_str().map(|s| !s.is_empty()).unwrap_or(false),
+                "trigger '{trigger}' produced empty or missing title"
+            );
+            assert!(
+                p["narration"].as_str().map(|s| !s.is_empty()).unwrap_or(false),
+                "trigger '{trigger}' produced empty or missing narration"
+            );
         }
     }
 
     #[tokio::test]
-    async fn test_mock_fallback_schema_path() {
-        // When no MOCK_TRIGGER is present, falls through to the schema-based path.
+    async fn narration_unknown_trigger_falls_to_catch_all() {
+        let mut req = base_req();
+        req.user = "MOCK_TRIGGER: completely_unknown_kind".to_string();
+        let resp = MockProvider.call(req).await.unwrap();
+        let p = resp.parsed.unwrap();
+        // The catch-all must still return a valid narration shape.
+        assert!(p["title"].as_str().is_some());
+        assert!(p["narration"].as_str().is_some());
+    }
+
+    #[tokio::test]
+    async fn narration_text_field_matches_serialised_parsed() {
+        let mut req = base_req();
+        req.user = "MOCK_TRIGGER: revert".to_string();
+        let resp = MockProvider.call(req).await.unwrap();
+        // `text` must be a valid re-parse of `parsed`.
+        let reparsed: serde_json::Value =
+            serde_json::from_str(&resp.text).expect("resp.text must be valid JSON");
+        assert_eq!(reparsed, resp.parsed.unwrap());
+    }
+
+    // -- Fail-hash guard -----------------------------------------------------
+
+    #[tokio::test]
+    async fn fail_hash_returns_err_with_trigger() {
+        let mut req = base_req();
+        req.user = format!("MOCK_TRIGGER: incident_linked\nCOMMIT_HASH: {MOCK_FAIL_HASH}");
+        let err = MockProvider.call(req).await.unwrap_err();
+        assert!(err.contains("deliberate failure"), "error must mention deliberate failure");
+        assert!(err.contains(MOCK_FAIL_HASH));
+    }
+
+    #[tokio::test]
+    async fn fail_hash_returns_err_without_trigger() {
+        // MOCK_FAIL_HASH fires even when no MOCK_TRIGGER: hint is present.
+        let mut req = base_req();
+        req.user = format!("COMMIT_HASH: {MOCK_FAIL_HASH}");
+        let err = MockProvider.call(req).await.unwrap_err();
+        assert!(err.contains("deliberate failure"));
+    }
+
+    // -- Latency hint --------------------------------------------------------
+
+    #[tokio::test]
+    async fn latency_hint_delays_response() {
+        let mut req = base_req();
+        req.user = "MOCK_LATENCY_MS: 50\nMOCK_TRIGGER: revert".to_string();
+        let start = std::time::Instant::now();
+        MockProvider.call(req).await.unwrap();
+        assert!(
+            start.elapsed() >= std::time::Duration::from_millis(40),
+            "should have slept at least 40 ms"
+        );
+    }
+
+    #[tokio::test]
+    async fn invalid_latency_hint_is_ignored() {
+        // A non-numeric latency value must not panic or error.
+        let mut req = base_req();
+        req.user = "MOCK_LATENCY_MS: not_a_number\nMOCK_TRIGGER: revert".to_string();
+        MockProvider.call(req).await.unwrap();
+    }
+
+    // -- Generic schema / prose delegation -----------------------------------
+
+    #[tokio::test]
+    async fn schema_path_fills_candidates_with_hash_echoing() {
+        // Without MOCK_TRIGGER:, ranking requests must echo hashes from the prompt.
         let req = ModelRequest {
             system: "rank".to_string(),
-            user: "some prompt without trigger".to_string(),
+            user: "CANDIDATES:\n- hash: abc\n  subject: fix\n- hash: def\n  subject: feat\n"
+                .to_string(),
             schema: Some(serde_json::json!({
                 "type": "object",
                 "required": ["candidates"],
@@ -270,7 +333,53 @@ mod tests {
             max_tokens: Some(1024),
         };
         let resp = MockProvider.call(req).await.unwrap();
-        let parsed = resp.parsed.unwrap();
-        assert!(parsed.get("candidates").is_some(), "should fill 'candidates' from schema");
+        let p = resp.parsed.unwrap();
+        let arr = p["candidates"].as_array().expect("candidates must be an array");
+        assert_eq!(arr.len(), 2);
+        assert_eq!(arr[0]["commit_hash"].as_str(), Some("abc"));
+        assert_eq!(arr[1]["commit_hash"].as_str(), Some("def"));
+    }
+
+    #[tokio::test]
+    async fn schema_path_fills_file_summary_fields() {
+        let req = ModelRequest {
+            system: "summarise".to_string(),
+            user: "File: foo.rs".to_string(),
+            schema: Some(serde_json::json!({
+                "required": ["provides", "externals", "purpose", "functionalities", "notes"]
+            })),
+            temperature: 0.0,
+            model_id: "mock".to_string(),
+            max_tokens: None,
+        };
+        let resp = MockProvider.call(req).await.unwrap();
+        let p = resp.parsed.unwrap();
+        assert!(p["provides"].as_str().is_some());
+        assert!(p["purpose"].as_str().is_some());
+        assert!(p["externals"].as_array().is_some());
+    }
+
+    #[tokio::test]
+    async fn prose_path_has_text_and_no_parsed() {
+        let req = ModelRequest {
+            system: "prose".to_string(),
+            user: "Subsystem: auth".to_string(),
+            schema: None,
+            temperature: 0.0,
+            model_id: "mock".to_string(),
+            max_tokens: None,
+        };
+        let resp = MockProvider.call(req).await.unwrap();
+        assert!(!resp.text.is_empty());
+        assert!(resp.parsed.is_none(), "prose responses must have parsed = None");
+    }
+
+    #[tokio::test]
+    async fn model_id_is_propagated() {
+        let mut req = base_req();
+        req.model_id = "test-model-xyz".to_string();
+        req.user = "MOCK_TRIGGER: revert".to_string();
+        let resp = MockProvider.call(req).await.unwrap();
+        assert_eq!(resp.model_id, "test-model-xyz");
     }
 }

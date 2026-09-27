@@ -274,6 +274,8 @@ function buildExportHtml(cards) {
       font-size: 12px;
       color: #57606a;
     }
+    .stop-title { font-size: 21px; }
+    .stop-narration { font-size: 14px; line-height: 1.78; }
   </style>
 </head>
 <body>

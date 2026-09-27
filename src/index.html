@@ -3,113 +3,409 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <meta name="theme-color" content="#111827" />
-  <title>GitLens — repository workspace</title>
+  <meta name="theme-color" content="#0f1117" />
+  <title>GitLens</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" />
   <link rel="stylesheet" href="/styles.css" />
   <link rel="stylesheet" href="/visualizer.css" />
-  <script type="module" src="/main.js" defer></script>
+  <script src="/main.js" defer></script>
+  <script src="/commit_graph.js" defer></script>
+  <script src="/architecture_diagram.js" defer></script>
+  <script src="/tour_export.js" defer></script>
 </head>
 <body>
-  <div class="app-shell">
-    <header class="topbar">
-      <a class="brand" href="#"><span class="brand-mark">✦</span><span>gitlens</span></a>
-      <div class="topbar-center"><span class="traffic-dot green"></span><span>Local workspace</span><span class="slash">/</span><span id="topbar-repo">No repository open</span></div>
-      <div class="topbar-right"><span class="local-pill"><i></i> Offline ready</span><button class="icon-button" id="theme-toggle" aria-label="Toggle theme">◐</button></div>
-    </header>
-    <div class="app-body">
-      <aside class="sidebar">
-        <div class="sidebar-section"><p class="sidebar-label">Workspace</p><button class="nav-item active"><span class="nav-icon">⌂</span>Overview</button><button class="nav-item" id="sidebar-files"><span class="nav-icon">▤</span>Files <span class="nav-count" id="sidebar-count">—</span></button><button class="nav-item"><span class="nav-icon">⌁</span>History</button></div>
-        <div class="sidebar-section repo-section"><p class="sidebar-label">Repository</p><button class="repo-shortcut" id="sidebar-repo"><span class="repo-mini-icon">⌘</span><span><strong id="sidebar-repo-name">Choose a folder</strong><small id="sidebar-repo-path">Open a local repository</small></span></button></div>
-        <div class="sidebar-bottom"><button class="nav-item"><span class="nav-icon">⚙</span>Preferences</button><p class="version">GitLens v0.1.0 <span>•</span> local first</p></div>
-      </aside>
-      <main class="main-content">
-        <section class="empty-state" id="welcome"><div class="empty-icon">✦</div><p class="eyebrow">Your local workspace</p><h1>Open a repository<br /><em>to get started.</em></h1><p class="lede">Browse files, inspect source, and keep an eye on changes from one focused workspace.</p><button class="primary-button" id="choose-folder"><span>Choose a folder</span><b>⌘ O</b></button><p class="privacy-note"><span>⌁</span> Files stay on your machine.</p></section>
-        <section class="workspace" id="workspace" hidden>
-          <div class="page-heading"><div><p class="eyebrow">Repository overview</p><h1 id="repo-name">Repository</h1><code id="repo-path">/path/to/folder</code></div><div class="repo-actions"><button class="secondary-button" id="change-folder">Change folder</button><button class="pull-button" id="git-pull"><span class="pull-symbol">↓</span> Git pull</button><button class="secondary-button" id="view-tour-btn" hidden>View tour →</button></div></div>
-          <div class="repo-stats"><div><span>Current branch</span><strong id="repo-branch">—</strong></div><div><span>Working tree</span><strong id="repo-clean">—</strong></div><div><span>Latest commit</span><strong id="repo-commit">—</strong></div><div><span>Visible items</span><strong id="repo-count">—</strong></div></div>
-          <div class="section-heading"><div><h2>Repository files</h2><p>Inspect source directly from your machine.</p></div><button class="ghost-button" id="refresh-view">↻ Refresh</button></div>
-          <div class="explorer"><aside class="file-panel"><div class="panel-title"><span>Explorer</span><small id="file-count">0 items</small></div><div class="file-list" id="file-list"></div></aside><section class="preview-panel"><div class="preview-head"><div><span class="file-kind" id="preview-kind">FILE PREVIEW</span><h3 id="preview-name">Select a file</h3></div><span id="preview-size"></span></div><pre id="file-preview"><span class="empty-preview">Choose a file from the explorer to inspect it here.</span></pre></section></div>
-          <div class="activity"><div class="activity-title"><span>Recent activity</span><small>session log</small></div><div class="activity-log" id="activity-log"><p><i>•</i> Ready to explore this folder.</p></div></div>
-        </section>
 
-        <section class="tour-section" id="tour-section" hidden>
-          <!-- Tour controls header -->
-          <div class="page-heading">
-            <div>
-              <p class="eyebrow">Onboarding tour</p>
-              <h1 id="tour-heading">Repository story</h1>
-            </div>
-            <div class="repo-actions">
-              <button class="ghost-button" id="tour-back-btn">← Back to overview</button>
-            </div>
-          </div>
+<!-- ═══════════════════════════════════════════════════════ TOPBAR ══ -->
+<header class="topbar" role="banner">
+  <a class="brand" href="#" aria-label="GitLens home">
+    <i class="bi bi-git brand-icon"></i>
+    <span class="brand-text">GitLens</span>
+  </a>
 
-          <!-- Credentials panel (collapsed by default) -->
-          <details class="credentials-panel" id="credentials-panel">
-            <summary>Document context (optional)</summary>
-            <div class="credentials-grid">
-              <label>GitHub token<input type="password" id="gh-token-input" placeholder="ghp_…" /></label>
-              <label>Repo (owner/repo)<input type="text" id="repo-slug-input" placeholder="e.g. acme/backend-api" /></label>
-              <label>Jira base URL<input type="text" id="jira-url-input" placeholder="https://acme.atlassian.net" /></label>
-              <label>Jira token<input type="password" id="jira-token-input" placeholder="Bearer token" /></label>
-            </div>
-          </details>
+  <div class="topbar-breadcrumb" id="topbar-breadcrumb" aria-live="polite">
+    <span class="bc-item bc-dim">No repository open</span>
+  </div>
 
-          <!-- Generate button (idle state) -->
-          <div id="tour-idle" class="tour-idle-prompt">
-            <p>Ready to generate a guided tour from <strong id="tour-candidate-count">—</strong> ranked candidates.</p>
-            <button class="primary-button" id="generate-tour-btn">Generate tour</button>
-          </div>
+  <div class="topbar-actions">
+    <span class="status-pill" id="status-pill">
+      <i class="bi bi-circle-fill status-dot" id="status-dot"></i>
+      <span id="status-label">Offline ready</span>
+    </span>
+    <button class="icon-btn" id="theme-toggle" aria-label="Toggle dark mode" title="Toggle dark mode">
+      <i class="bi bi-moon-stars-fill" id="theme-icon"></i>
+    </button>
+  </div>
+</header>
 
-          <!-- Fetching docs state -->
-          <div id="tour-fetching" class="tour-state-panel" hidden>
-            <div class="tour-spinner"></div>
-            <p>Gathering incident context…</p>
-          </div>
+<!-- ═══════════════════════════════════════════════════════ BODY ══ -->
+<div class="app-body">
 
-          <!-- Error state -->
-          <div id="tour-error" class="tour-state-panel" hidden>
-            <p class="tour-error-msg" id="tour-error-msg">Something went wrong.</p>
-            <button class="secondary-button" id="tour-retry-btn">Retry</button>
-          </div>
-
-          <!-- Visualizer panels (Workstream E) — shown as soon as ranking completes -->
-          <div class="vz-arch-section" id="vz-arch-section" hidden>
-            <p class="eyebrow">Before the story begins</p>
-            <h3>Subsystem map</h3>
-            <div id="arch-diagram-container"></div>
-          </div>
-          <div class="vz-graph-section" id="vz-graph-section" hidden>
-            <p class="eyebrow">Commit landscape</p>
-            <h3>History timeline</h3>
-            <div id="commit-graph-container"></div>
-          </div>
-
-          <!-- Stop list (narrating + ready + partial_failure states) -->
-          <div id="tour-stop-list" hidden>
-            <!-- Partial failure banner -->
-            <div id="tour-partial-banner" class="tour-partial-banner" hidden>
-              <span>⚠ Some stops could not be narrated — showing available stops below.</span>
-            </div>
-            <!-- Prev/next nav -->
-            <div class="tour-nav" id="tour-nav">
-              <button class="ghost-button" id="tour-prev-btn" disabled>← Previous</button>
-              <span class="tour-counter" id="tour-counter">Stop 1 of —</span>
-              <button class="ghost-button" id="tour-next-btn" disabled>Next →</button>
-            </div>
-            <!-- Individual stop cards rendered here by JS -->
-            <div id="tour-cards-container"></div>
-            <!-- Export row (Workstream E) -->
-            <div class="vz-export-row" id="vz-export-row" hidden>
-              <button class="ghost-button" id="tour-export-btn">⤓ Export tour</button>
-            </div>
-          </div>
-        </section>
-      </main>
+  <!-- ────────────────────────────────────── SIDEBAR ── -->
+  <nav class="sidebar" aria-label="Primary navigation">
+    <div class="sidebar-top">
+      <p class="sidebar-label">Workspace</p>
+      <button class="nav-item active" id="nav-overview" data-view="overview">
+        <i class="bi bi-house-door"></i><span>Overview</span>
+      </button>
+      <button class="nav-item" id="nav-files" data-view="files">
+        <i class="bi bi-folder2-open"></i><span>Files</span>
+        <span class="nav-badge" id="nav-files-count" hidden></span>
+      </button>
+      <button class="nav-item" id="nav-history" data-view="history" disabled title="Requires open repository">
+        <i class="bi bi-clock-history"></i><span>History</span>
+      </button>
+      <button class="nav-item" id="nav-tour" data-view="tour" disabled title="Run extraction first">
+        <i class="bi bi-map"></i><span>Tour</span>
+        <span class="nav-badge tour-badge" id="nav-tour-count" hidden></span>
+      </button>
     </div>
-  </div><div class="toast" id="toast" role="status"></div>
-  <script type="module" src="/commit_graph.js" defer></script>
-  <script type="module" src="/architecture_diagram.js" defer></script>
-  <script type="module" src="/tour_export.js" defer></script>
+
+    <div class="sidebar-repo">
+      <p class="sidebar-label">Repository</p>
+      <button class="repo-card" id="sidebar-repo-btn">
+        <i class="bi bi-box-seam repo-card-icon"></i>
+        <div class="repo-card-text">
+          <strong id="sidebar-repo-name">Choose a folder</strong>
+          <small id="sidebar-repo-path">Open a local repository</small>
+        </div>
+        <i class="bi bi-chevron-right repo-card-chevron"></i>
+      </button>
+    </div>
+
+    <div class="sidebar-bottom">
+      <button class="nav-item" id="nav-settings">
+        <i class="bi bi-gear"></i><span>Settings</span>
+      </button>
+      <p class="version-tag">v0.1.0 · local first</p>
+    </div>
+  </nav>
+
+  <!-- ────────────────────────────────── MAIN CONTENT ── -->
+  <main class="main-content" id="main-content">
+
+    <!-- ─────────────────────────── WELCOME ── -->
+    <section class="view view-welcome" id="view-welcome" aria-labelledby="welcome-heading">
+      <div class="welcome-inner">
+        <div class="welcome-glyph" aria-hidden="true">
+          <i class="bi bi-git"></i>
+        </div>
+        <p class="eyebrow">Your local workspace</p>
+        <h1 id="welcome-heading">Open a repository<br /><em>to get started.</em></h1>
+        <p class="lede">Explore files, mine commit history, and generate a narrated onboarding tour — all from your machine.</p>
+        <button class="btn btn-primary btn-lg" id="choose-folder-btn">
+          <i class="bi bi-folder2-open"></i>
+          Choose a folder
+        </button>
+        <p class="privacy-note">
+          <i class="bi bi-shield-lock"></i>
+          Files stay on your machine.
+        </p>
+      </div>
+    </section>
+
+    <!-- ─────────────────────────── OVERVIEW ── -->
+    <section class="view view-workspace" id="view-workspace" hidden aria-labelledby="repo-name-heading">
+      <div class="page-header">
+        <div class="page-header-info">
+          <p class="eyebrow">Repository</p>
+          <h1 id="repo-name-heading" class="page-title">Repository</h1>
+          <code class="repo-path-code" id="repo-path-display"></code>
+        </div>
+        <div class="page-header-actions">
+          <button class="btn btn-ghost" id="change-folder-btn">
+            <i class="bi bi-folder2-open"></i> Change
+          </button>
+          <button class="btn btn-secondary" id="git-pull-btn">
+            <i class="bi bi-arrow-down-circle"></i> Pull
+          </button>
+          <button class="btn btn-primary" id="run-extraction-btn">
+            <i class="bi bi-search"></i> Mine history
+          </button>
+        </div>
+      </div>
+
+      <!-- Repo stats bar -->
+      <div class="stat-bar" role="list">
+        <div class="stat-item" role="listitem">
+          <i class="bi bi-code-branch stat-icon"></i>
+          <div>
+            <span class="stat-label">Branch</span>
+            <strong class="stat-value" id="stat-branch">—</strong>
+          </div>
+        </div>
+        <div class="stat-item" role="listitem">
+          <i class="bi bi-circle-half stat-icon"></i>
+          <div>
+            <span class="stat-label">Working tree</span>
+            <strong class="stat-value" id="stat-clean">—</strong>
+          </div>
+        </div>
+        <div class="stat-item" role="listitem">
+          <i class="bi bi-hash stat-icon"></i>
+          <div>
+            <span class="stat-label">Latest commit</span>
+            <strong class="stat-value" id="stat-commit">—</strong>
+          </div>
+        </div>
+        <div class="stat-item" role="listitem">
+          <i class="bi bi-files stat-icon"></i>
+          <div>
+            <span class="stat-label">Files</span>
+            <strong class="stat-value" id="stat-count">—</strong>
+          </div>
+        </div>
+      </div>
+
+      <!-- File explorer -->
+      <div class="panel-row">
+        <aside class="file-panel" aria-label="File explorer">
+          <div class="panel-header">
+            <span class="panel-title"><i class="bi bi-folder-symlink"></i> Explorer</span>
+            <span class="panel-meta" id="file-count-label">0 items</span>
+          </div>
+          <div class="file-search-row">
+            <i class="bi bi-search file-search-icon"></i>
+            <input type="search" class="file-search-input" id="file-search" placeholder="Filter files…" aria-label="Filter files" />
+          </div>
+          <div class="file-list" id="file-list" role="listbox" aria-label="Repository files"></div>
+        </aside>
+
+        <section class="preview-panel" aria-label="File preview">
+          <div class="preview-header">
+            <div class="preview-info">
+              <span class="file-kind-badge" id="preview-kind">FILE PREVIEW</span>
+              <h3 class="preview-filename" id="preview-name">Select a file</h3>
+            </div>
+            <div class="preview-meta">
+              <span id="preview-size"></span>
+              <button class="btn btn-ghost btn-sm" id="preview-copy-btn" hidden>
+                <i class="bi bi-clipboard"></i> Copy
+              </button>
+            </div>
+          </div>
+          <pre class="preview-body" id="file-preview" aria-live="polite"><span class="empty-preview">Choose a file from the explorer to preview it here.</span></pre>
+        </section>
+      </div>
+
+      <!-- Activity log -->
+      <div class="activity-panel">
+        <div class="activity-header">
+          <span><i class="bi bi-terminal"></i> Activity</span>
+          <button class="btn btn-ghost btn-sm" id="clear-log-btn"><i class="bi bi-trash"></i> Clear</button>
+        </div>
+        <div class="activity-log" id="activity-log" role="log" aria-live="polite" aria-label="Activity log">
+          <p><i class="bi bi-circle-fill log-dot"></i> Ready.</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- ─────────────────────────── EXTRACTION WIZARD ── -->
+    <section class="view view-extraction" id="view-extraction" hidden aria-labelledby="extraction-heading">
+      <div class="page-header">
+        <div class="page-header-info">
+          <p class="eyebrow">Step 1 of 2</p>
+          <h1 id="extraction-heading" class="page-title">Mine commit history</h1>
+          <p class="page-subtitle">Discover subsystems and extract significant commits from your repository.</p>
+        </div>
+        <div class="page-header-actions">
+          <button class="btn btn-ghost" id="extraction-back-btn">
+            <i class="bi bi-arrow-left"></i> Back
+          </button>
+        </div>
+      </div>
+
+      <div class="wizard-grid">
+        <!-- Step A: Repo config -->
+        <div class="wizard-card" id="wizard-repo-config">
+          <div class="wizard-card-header">
+            <span class="wizard-step-badge">A</span>
+            <h2>Repository &amp; window</h2>
+          </div>
+          <div class="form-grid">
+            <div class="form-field">
+              <label for="mining-repo-path">Repository path</label>
+              <div class="input-with-btn">
+                <input type="text" id="mining-repo-path" placeholder="/path/to/repo" readonly />
+                <button class="btn btn-secondary btn-sm" id="mining-browse-btn"><i class="bi bi-folder2-open"></i></button>
+              </div>
+            </div>
+            <div class="form-field form-field-half">
+              <label for="max-age-input">Max age (days)</label>
+              <input type="number" id="max-age-input" placeholder="730" min="1" />
+              <span class="field-hint">Blank = no limit</span>
+            </div>
+            <div class="form-field form-field-half">
+              <label for="max-commits-input">Max commits / subsystem</label>
+              <input type="number" id="max-commits-input" placeholder="500" min="1" />
+              <span class="field-hint">Blank = no limit</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Step B: Subsystems -->
+        <div class="wizard-card" id="wizard-subsystems">
+          <div class="wizard-card-header">
+            <span class="wizard-step-badge">B</span>
+            <h2>Subsystems</h2>
+            <button class="btn btn-secondary btn-sm ml-auto" id="discover-btn">
+              <i class="bi bi-magic"></i> Auto-discover
+            </button>
+          </div>
+          <p class="wizard-hint" id="discover-status">Define path-prefix partitions, or auto-discover from the repo tree.</p>
+          <textarea class="code-textarea" id="subsystems-input" rows="8" placeholder='[{"name":"backend","path_prefixes":["src/"]},{"name":"frontend","path_prefixes":["web/"]}]' spellcheck="false"></textarea>
+        </div>
+      </div>
+
+      <!-- Run extraction -->
+      <div class="extraction-run-row">
+        <div class="extraction-status-text" id="mining-status">Ready to extract.</div>
+        <button class="btn btn-primary btn-lg" id="run-mining-btn">
+          <i class="bi bi-play-fill"></i> Run extraction
+        </button>
+      </div>
+
+      <!-- Results summary (hidden until done) -->
+      <div class="extraction-results" id="extraction-results" hidden>
+        <div class="results-summary-bar" id="results-summary-bar"></div>
+        <div class="results-actions">
+          <button class="btn btn-primary" id="proceed-to-tour-btn">
+            <i class="bi bi-arrow-right"></i> Rank &amp; generate tour
+          </button>
+          <button class="btn btn-ghost btn-sm" id="toggle-raw-output-btn">
+            <i class="bi bi-code-slash"></i> Raw output
+          </button>
+        </div>
+        <details class="raw-output-details" id="raw-output-details">
+          <summary>Raw JSON output</summary>
+          <pre class="raw-output-pre" id="mining-output-pre"></pre>
+        </details>
+      </div>
+    </section>
+
+    <!-- ─────────────────────────── TOUR ── -->
+    <section class="view view-tour" id="view-tour" hidden aria-labelledby="tour-heading">
+      <div class="page-header">
+        <div class="page-header-info">
+          <p class="eyebrow">Step 2 of 2 · Onboarding tour</p>
+          <h1 id="tour-heading" class="page-title">Repository story</h1>
+          <p class="page-subtitle" id="tour-subtitle"></p>
+        </div>
+        <div class="page-header-actions">
+          <button class="btn btn-ghost" id="tour-back-btn">
+            <i class="bi bi-arrow-left"></i> Back
+          </button>
+        </div>
+      </div>
+
+      <!-- Credentials (optional) -->
+      <details class="creds-panel" id="creds-panel">
+        <summary>
+          <i class="bi bi-key"></i> Document context <span class="creds-badge">optional</span>
+        </summary>
+        <div class="creds-grid">
+          <div class="form-field">
+            <label for="gh-token-input"><i class="bi bi-github"></i> GitHub token</label>
+            <input type="password" id="gh-token-input" placeholder="ghp_…" autocomplete="off" />
+          </div>
+          <div class="form-field">
+            <label for="repo-slug-input"><i class="bi bi-box-seam"></i> Repo slug (owner/repo)</label>
+            <input type="text" id="repo-slug-input" placeholder="acme/backend-api" />
+          </div>
+          <div class="form-field">
+            <label for="jira-url-input"><i class="bi bi-kanban"></i> Jira base URL</label>
+            <input type="text" id="jira-url-input" placeholder="https://acme.atlassian.net" />
+          </div>
+          <div class="form-field">
+            <label for="jira-token-input"><i class="bi bi-key-fill"></i> Jira token</label>
+            <input type="password" id="jira-token-input" placeholder="Bearer token" autocomplete="off" />
+          </div>
+        </div>
+      </details>
+
+      <!-- ── IDLE ── -->
+      <div id="tour-idle" class="tour-idle">
+        <div class="tour-idle-inner">
+          <div class="tour-idle-icon"><i class="bi bi-map"></i></div>
+          <h2>Ready to generate your tour</h2>
+          <p>Found <strong id="tour-candidate-count">—</strong> ranked candidates across your commit history.</p>
+          <button class="btn btn-primary btn-lg" id="generate-tour-btn">
+            <i class="bi bi-play-fill"></i> Generate tour
+          </button>
+        </div>
+      </div>
+
+      <!-- ── RANKING IN PROGRESS ── -->
+      <div id="tour-ranking" class="tour-state-panel" hidden>
+        <div class="spinner"></div>
+        <p class="state-label">Ranking commits…</p>
+        <p class="state-sub">Analysing signals and scoring candidates</p>
+      </div>
+
+      <!-- ── FETCHING DOCS ── -->
+      <div id="tour-fetching" class="tour-state-panel" hidden>
+        <div class="spinner"></div>
+        <p class="state-label">Gathering context…</p>
+        <p class="state-sub">Fetching linked issues and incident reports</p>
+      </div>
+
+      <!-- ── ERROR ── -->
+      <div id="tour-error" class="tour-state-panel" hidden>
+        <i class="bi bi-exclamation-triangle tour-error-icon"></i>
+        <p class="state-label">Something went wrong</p>
+        <p class="tour-error-msg" id="tour-error-msg"></p>
+        <button class="btn btn-secondary" id="tour-retry-btn">
+          <i class="bi bi-arrow-counterclockwise"></i> Retry
+        </button>
+      </div>
+
+      <!-- ── VISUALIZERS ── -->
+      <div class="vz-arch-section" id="vz-arch-section" hidden>
+        <p class="eyebrow">Subsystem map</p>
+        <h3>Co-occurrence diagram</h3>
+        <div id="arch-diagram-container"></div>
+      </div>
+      <div class="vz-graph-section" id="vz-graph-section" hidden>
+        <p class="eyebrow">Commit landscape</p>
+        <h3>History timeline</h3>
+        <div id="commit-graph-container"></div>
+      </div>
+
+      <!-- ── STOP LIST (narrating / ready / partial_failure) ── -->
+      <div id="tour-stop-list" hidden>
+        <!-- Partial failure banner -->
+        <div id="tour-partial-banner" class="partial-banner" hidden>
+          <i class="bi bi-exclamation-triangle"></i>
+          Some stops could not be narrated — showing available stops below.
+        </div>
+
+        <!-- Navigation bar -->
+        <div class="tour-nav" id="tour-nav" role="navigation" aria-label="Tour navigation">
+          <button class="btn btn-ghost" id="tour-prev-btn" disabled aria-label="Previous stop">
+            <i class="bi bi-chevron-left"></i> Previous
+          </button>
+          <span class="tour-counter" id="tour-counter" aria-live="polite">Stop 1 of —</span>
+          <button class="btn btn-ghost" id="tour-next-btn" disabled aria-label="Next stop">
+            Next <i class="bi bi-chevron-right"></i>
+          </button>
+        </div>
+
+        <!-- Stop cards rendered here by JS -->
+        <div id="tour-cards-container" aria-live="polite"></div>
+
+        <!-- Export row -->
+        <div class="export-row" id="vz-export-row" hidden>
+          <button class="btn btn-ghost" id="tour-export-btn">
+            <i class="bi bi-download"></i> Export tour
+          </button>
+        </div>
+      </div>
+    </section>
+
+  </main><!-- /main-content -->
+</div><!-- /app-body -->
+
+<!-- ─────────────── TOAST ── -->
+<div class="toast" id="toast" role="status" aria-live="assertive" aria-atomic="true"></div>
+
 </body>
 </html>

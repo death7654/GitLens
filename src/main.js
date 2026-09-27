@@ -1,422 +1,372 @@
+/**
+ * main.js — GitLens frontend
+ *
+ * Wires the HTML shell to the Tauri IPC backend.
+ * Real commands available:
+ *   extract_git_history(config: MiningConfig)        → MiningOutput
+ *   discover_repo_subsystems(repoPath: string)        → SubsystemDef[]
+ *   rank_significant_commits(candidates, repoPath,
+ *     cacheRoot, subsystems, cfg?)                    → RankingOutput
+ *   fetch_stop_documents(rankingOutput, miningOutput, cfg) → StopStub[]
+ *   narrate_stop(stub, otherEvidenceSummaries,
+ *     repoPath, cacheRoot, cfg)                       → TourStop
+ *
+ * NOTE: inspect_folder / read_repo_file / git_pull are NOT available.
+ * Folder browsing uses the Tauri dialog API; repo info is derived from
+ * extract_git_history results.
+ */
+
+// Tauri IPC — available via window.__TAURI__ injected by the Tauri runtime.
 const { invoke } = window.__TAURI__.core;
-const { open } = window.__TAURI__.dialog;
-const $ = (selector) => document.querySelector(selector);
-const toast = $('#toast');
-let selectedRoot = '';
+const { open }   = window.__TAURI__.dialog;
 
-function notify(message) { toast.textContent = message; toast.classList.add('show'); window.setTimeout(() => toast.classList.remove('show'), 3600); }
-function log(message, error = false) { const item = document.createElement('p'); item.innerHTML = `<i>${error ? '!' : '•'}</i> ${message}`; if (error) item.style.color = 'var(--orange)'; $('#activity-log').prepend(item); }
-function bytes(size) { if (size < 1024) return `${size} B`; if (size < 1048576) return `${(size / 1024).toFixed(1)} KB`; return `${(size / 1048576).toFixed(1)} MB`; }
+// ---------------------------------------------------------------------------
+// Globals
+// ---------------------------------------------------------------------------
 
-async function chooseFolder() {
-  try {
-    const path = await open({ directory: true, multiple: false, title: 'Choose a local repository folder' });
-    if (typeof path === 'string') await loadFolder(path);
-  } catch (error) { notify(`Folder picker unavailable: ${error}`); }
-}
+/** @type {string} Currently open repo path. */
+let repoPath = '';
 
-async function loadFolder(path) {
-  try {
-    const repo = await invoke('inspect_folder', { path });
-    selectedRoot = repo.root;
-    $('#welcome').hidden = true; $('#workspace').hidden = false;
-    $('#repo-name').textContent = repo.name || 'Untitled folder'; $('#repo-path').textContent = repo.root;
-    $('#topbar-repo').textContent = repo.name || 'Untitled folder';
-    $('#sidebar-repo-name').textContent = repo.name || 'Untitled folder'; $('#sidebar-repo-path').textContent = repo.root;
-    $('#repo-branch').textContent = repo.branch; $('#repo-clean').textContent = repo.clean ? 'clean' : 'changes present';
-    $('#repo-clean').style.color = repo.clean ? 'var(--green)' : 'var(--orange)'; $('#repo-commit').textContent = repo.commit;
-    $('#repo-count').textContent = repo.entries.length; $('#file-count').textContent = `${repo.entries.length} items`;
-    $('#sidebar-count').textContent = repo.entries.length;
-    renderEntries(repo.entries); log(`Opened ${repo.name} locally.`); window.scrollTo({ top: 0, behavior: 'smooth' });
-  } catch (error) { notify(String(error)); log(String(error), true); }
-}
+/** @type {import('./types').MiningOutput|null} */
+window.miningOutput  = null;
 
-function renderEntries(entries) {
-  const list = $('#file-list'); list.innerHTML = '';
-  entries.forEach((entry) => {
-    const button = document.createElement('button'); button.className = `file-row ${entry.kind}`; button.title = entry.path;
-    button.innerHTML = `<span class="file-symbol">${entry.kind === 'directory' ? '▸' : '·'}</span><span>${entry.path}</span>${entry.kind === 'file' ? `<small>${bytes(entry.size)}</small>` : ''}`;
-    if (entry.kind === 'file') button.addEventListener('click', () => readFile(entry, button));
-    else button.disabled = true;
-    list.append(button);
-  });
-}
+/** @type {import('./types').RankingOutput|null} */
+window.rankingOutput = null;
 
-async function readFile(entry, button) {
-  document.querySelectorAll('.file-row').forEach((row) => row.classList.remove('selected')); button.classList.add('selected');
-  $('#preview-name').textContent = entry.path; $('#preview-size').textContent = bytes(entry.size); $('#preview-kind').textContent = entry.name.split('.').pop().toUpperCase() + ' FILE';
-  try { $('#file-preview').textContent = await invoke('read_repo_file', { root: selectedRoot, relativePath: entry.path }); }
-  catch (error) { $('#file-preview').textContent = String(error); }
-}
-
-async function pull() {
-  if (!selectedRoot) return;
-  $('#git-pull').disabled = true; $('#git-pull').innerHTML = '<span class="pull-symbol">…</span> Pulling'; log('Running git pull --ff-only…');
-  try { const result = await invoke('git_pull', { path: selectedRoot }); log(result.output, !result.success); notify(result.success ? 'Git pull completed.' : 'Git pull needs attention.'); await loadFolder(selectedRoot); }
-  catch (error) { log(String(error), true); notify(String(error)); }
-  finally { $('#git-pull').disabled = false; $('#git-pull').innerHTML = '<span class="pull-symbol">↓</span> Git pull'; }
-}
-
-$('#choose-folder').addEventListener('click', chooseFolder); $('#change-folder').addEventListener('click', chooseFolder); $('#git-pull').addEventListener('click', pull);
-$('#sidebar-repo').addEventListener('click', chooseFolder);
-$('#sidebar-files').addEventListener('click', () => $('#workspace').hidden ? chooseFolder() : $('#file-list').scrollIntoView({ behavior: 'smooth', block: 'center' }));
-$('#refresh-view').addEventListener('click', () => selectedRoot && loadFolder(selectedRoot));
-$('#theme-toggle').addEventListener('click', () => document.body.classList.toggle('dim-mode'));
-
-let greetInputEl;
-let greetMsgEl;
-
-async function greet() {
-  // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
-  greetMsgEl.textContent = await invoke("greet", { name: greetInputEl.value });
-}
-
-// --- Git History Extraction test panel (Person 1) ---
-async function runExtraction() {
-  const statusEl = document.querySelector("#mining-status");
-  const outputEl = document.querySelector("#mining-output");
-  const repoPath = document.querySelector("#repo-path-input").value.trim();
-  const subsystemsRaw = document.querySelector("#subsystems-input").value;
-  const maxAgeDays = Number(document.querySelector("#max-age-input").value) || null;
-  const maxCommits = Number(document.querySelector("#max-commits-input").value) || null;
-
-  outputEl.textContent = "";
-
-  if (!repoPath) {
-    statusEl.textContent = "Enter a repo path first.";
-    return;
-  }
-
-  let subsystems;
-  try {
-    subsystems = JSON.parse(subsystemsRaw);
-  } catch (err) {
-    statusEl.textContent = `Subsystems JSON is invalid: ${err.message}`;
-    return;
-  }
-
-  const config = {
-    repo_path: repoPath,
-    subsystems,
-    window: {
-      max_age_days: maxAgeDays,
-      max_commits_per_subsystem: maxCommits,
-    },
-  };
-
-  statusEl.textContent = "Running extraction...";
-  const started = performance.now();
-
-  try {
-    const result = await invoke("extract_git_history", { config });
-    const elapsed = ((performance.now() - started) / 1000).toFixed(2);
-    statusEl.textContent =
-      `Scanned ${result.total_commits_scanned} raw commits across ` +
-      `${result.subsystems_scanned.length} subsystem(s), found ` +
-      `${result.candidate_count} candidate(s) in ${elapsed}s.`;
-    outputEl.textContent = JSON.stringify(result, null, 2);
-  } catch (err) {
-    statusEl.textContent = "Extraction failed — see output below.";
-    outputEl.textContent = typeof err === "string" ? err : JSON.stringify(err, null, 2);
-  }
-}
-
-// --- Auto tree discovery ---
-// Reads the repo's HEAD tree and turns its top-level directories into
-// candidate subsystems, so the user doesn't have to guess path_prefixes
-// against a repo they haven't opened in an editor. Only fills in the
-// subsystems textarea (never touches repo path / age / commit-cap fields),
-// and the result is still just a starting point the user can hand-edit
-// before running extraction — discovery doesn't run extraction itself.
-async function discoverSubsystems() {
-  const statusEl = document.querySelector("#discover-status");
-  const repoPath = document.querySelector("#repo-path-input").value.trim();
-
-  if (!repoPath) {
-    statusEl.textContent = "Enter a repo path first.";
-    return;
-  }
-
-  statusEl.textContent = "Scanning repo tree...";
-
-  try {
-    const subsystems = await invoke("discover_repo_subsystems", { repoPath });
-    document.querySelector("#subsystems-input").value = JSON.stringify(subsystems, null, 2);
-    statusEl.textContent = subsystems.length
-      ? `Found ${subsystems.length} candidate subsystem(s) — review the prefixes below before running extraction.`
-      : "No subsystems found (empty repo, or everything at root was filtered out).";
-  } catch (err) {
-    statusEl.textContent =
-      "Discovery failed: " + (typeof err === "string" ? err : JSON.stringify(err));
-  }
-}
-
-window.addEventListener("DOMContentLoaded", () => {
-  greetInputEl = document.querySelector("#greet-input");
-  greetMsgEl = document.querySelector("#greet-msg");
-  const greetForm = document.querySelector("#greet-form");
-  if (greetForm) greetForm.addEventListener("submit", (e) => { e.preventDefault(); greet(); });
-
-  const miningForm = document.querySelector("#mining-form");
-  if (miningForm) miningForm.addEventListener("submit", (e) => { e.preventDefault(); runExtraction(); });
-
-  const discoverBtn = document.querySelector("#discover-subsystems-btn");
-  if (discoverBtn) discoverBtn.addEventListener("click", () => { discoverSubsystems(); });
-
-  initTourUI();
-});
-
-// =============================================================================
-// Tour UI — Onboarding Ghost
-// =============================================================================
-
-/** @type {'idle'|'fetching_docs'|'narrating'|'ready'|'partial_failure'|'error'} */
+// Tour state machine
+/** @type {'idle'|'ranking'|'fetching_docs'|'narrating'|'ready'|'partial_failure'|'error'} */
 let tourState = 'idle';
 let currentStopIndex = 0;
-/** Total number of stops (stubs length), set when narrating begins. */
-let tourStopCount = 0;
-
-// Shared results from extraction / ranking steps (set by callers when available)
-window.miningOutput = window.miningOutput || null;
-window.rankingOutput = window.rankingOutput || null;
+let tourStopCount    = 0;
 
 // ---------------------------------------------------------------------------
-// State machine
+// DOM helpers
+// ---------------------------------------------------------------------------
+
+const $ = (sel) => document.querySelector(sel);
+
+/** @param {string} msg @param {'info'|'error'|'success'} [kind] */
+function toast(msg, kind = 'info') {
+  const el = $('#toast');
+  el.textContent = msg;
+  el.className = `toast show toast-${kind}`;
+  clearTimeout(el._t);
+  el._t = setTimeout(() => el.classList.remove('show'), 3800);
+}
+
+/**
+ * Append a line to the activity log.
+ * @param {string} html  Raw HTML string (use esc() for untrusted content)
+ * @param {'info'|'error'|'success'} [kind]
+ */
+function log(html, kind = 'info') {
+  const el = document.createElement('p');
+  const iconClass = kind === 'error' ? 'bi-exclamation-circle log-error'
+    : kind === 'success' ? 'bi-check-circle log-success'
+    : 'bi-circle-fill log-dot';
+  el.innerHTML = `<i class="bi ${iconClass}"></i> ${html}`;
+  const log = $('#activity-log');
+  log.prepend(el);
+  // keep at most 60 entries
+  while (log.children.length > 60) log.lastChild.remove();
+}
+
+/** HTML-escape untrusted string. */
+function esc(str) {
+  return String(str)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;').replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+/** Format bytes → human-readable. */
+function bytes(n) {
+  if (n < 1024) return `${n} B`;
+  if (n < 1048576) return `${(n / 1024).toFixed(1)} KB`;
+  return `${(n / 1048576).toFixed(1)} MB`;
+}
+
+/** Switch active sidebar nav item, update topbar breadcrumb. */
+function setActiveNav(viewId) {
+  document.querySelectorAll('.nav-item').forEach(b => b.classList.remove('active'));
+  const btn = document.querySelector(`[data-view="${viewId}"]`);
+  if (btn) btn.classList.add('active');
+}
+
+/**
+ * Show one view, hide the others.
+ * @param {'welcome'|'workspace'|'extraction'|'tour'} name
+ */
+function showView(name) {
+  ['view-welcome', 'view-workspace', 'view-extraction', 'view-tour'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.hidden = id !== `view-${name}`;
+  });
+  setActiveNav(name === 'workspace' ? 'overview' : name);
+  window.scrollTo({ top: 0, behavior: 'smooth' });
+}
+
+// ---------------------------------------------------------------------------
+// Folder picker & repo loading
 // ---------------------------------------------------------------------------
 
 /**
- * Transition the tour section into a new state, showing/hiding the appropriate
- * sub-panels.  `payload` carries state-specific data (e.g. error message).
- * @param {'idle'|'fetching_docs'|'narrating'|'ready'|'partial_failure'|'error'} state
- * @param {{ message?: string, stubs?: import('./types').StopStub[], anyFailed?: boolean }} [payload]
+ * Open the native folder picker and update repoPath + UI.
+ * Returns the chosen path, or null if cancelled.
+ * @returns {Promise<string|null>}
  */
-function setTourState(state, payload = {}) {
-  tourState = state;
+async function chooseFolder() {
+  try {
+    const chosen = await open({ directory: true, multiple: false, title: 'Choose a repository folder' });
+    if (typeof chosen !== 'string') return null;
+    repoPath = chosen;
+    applyRepoPath(repoPath);
+    return repoPath;
+  } catch (e) {
+    toast(`Folder picker unavailable: ${e}`, 'error');
+    return null;
+  }
+}
 
-  // Sub-panels
-  const idlePanel    = $('#tour-idle');
-  const fetchPanel   = $('#tour-fetching');
-  const errorPanel   = $('#tour-error');
-  const stopList     = $('#tour-stop-list');
-  const partialBanner = $('#tour-partial-banner');
+/**
+ * Apply a repo path to all persistent UI slots without doing any I/O.
+ * @param {string} path
+ */
+function applyRepoPath(path) {
+  if (!path) return;
+  repoPath = path;
+  const name = path.split(/[/\\]/).filter(Boolean).pop() || path;
 
-  // Hide all sub-panels first
-  idlePanel.hidden    = true;
-  fetchPanel.hidden   = true;
-  errorPanel.hidden   = true;
-  stopList.hidden     = true;
-  partialBanner.hidden = true;
+  // Topbar breadcrumb
+  $('#topbar-breadcrumb').innerHTML =
+    `<span class="bc-item bc-dim">Local</span>` +
+    `<i class="bi bi-chevron-right bc-sep" style="font-size:10px"></i>` +
+    `<span class="bc-item bc-active">${esc(name)}</span>`;
 
-  switch (state) {
-    case 'idle': {
-      idlePanel.hidden = false;
-      const candidateCount = window.rankingOutput?.tour_candidates?.length ?? 0;
-      $('#tour-candidate-count').textContent = candidateCount > 0 ? String(candidateCount) : '—';
-      break;
+  // Sidebar
+  $('#sidebar-repo-name').textContent = name;
+  $('#sidebar-repo-path').textContent = path;
+
+  // Overview page
+  $('#repo-name-heading').textContent = name;
+  $('#repo-path-display').textContent = path;
+
+  // Extraction wizard
+  $('#mining-repo-path').value = path;
+
+  // Enable sidebar items that need a repo
+  $('#nav-history').disabled = false;
+
+  showView('workspace');
+  log(`Opened <strong>${esc(name)}</strong>`);
+}
+
+// ---------------------------------------------------------------------------
+// File explorer (backed by the MiningOutput file list as a fallback;
+// we use discover_repo_subsystems just for subsystem discovery, not file listing)
+// ---------------------------------------------------------------------------
+
+/** @type {Array<{path:string, kind:'file'|'directory', size:number, name:string}>} */
+let currentEntries = [];
+
+/** @param {string} filter */
+function renderEntries(filter = '') {
+  const list = $('#file-list');
+  list.innerHTML = '';
+  const lc = filter.toLowerCase();
+  const filtered = filter
+    ? currentEntries.filter(e => e.path.toLowerCase().includes(lc))
+    : currentEntries;
+
+  filtered.forEach(entry => {
+    const btn = document.createElement('button');
+    const isDir = entry.kind === 'directory';
+    btn.className = `file-row ${entry.kind}`;
+    btn.title = entry.path;
+    const icon = isDir ? 'bi-folder-fill' : fileIcon(entry.name || entry.path);
+    btn.innerHTML =
+      `<i class="bi ${icon}"></i>` +
+      `<span>${esc(entry.path)}</span>` +
+      (isDir ? '' : `<small>${bytes(entry.size || 0)}</small>`);
+    if (!isDir) {
+      btn.addEventListener('click', () => previewEntry(entry, btn));
+    } else {
+      btn.disabled = true;
     }
-    case 'fetching_docs':
-      fetchPanel.hidden = false;
-      break;
+    list.append(btn);
+  });
 
-    case 'narrating': {
-      stopList.hidden = false;
-      // Build skeleton cards for all stubs
-      if (payload.stubs) {
-        tourStopCount = payload.stubs.length;
-        const container = $('#tour-cards-container');
-        container.innerHTML = '';
-        payload.stubs.forEach((_stub, i) => {
-          container.appendChild(buildSkeletonCard(i));
-        });
-        currentStopIndex = 0;
-        updateNav();
-      }
-      break;
-    }
+  $('#file-count-label').textContent = `${filtered.length} items`;
+  $('#stat-count').textContent = currentEntries.length;
+  const badge = $('#nav-files-count');
+  badge.textContent = currentEntries.length;
+  badge.hidden = false;
+}
 
-    case 'ready':
-      stopList.hidden = false;
-      showStop(currentStopIndex);
-      break;
+/** Pick a Bootstrap icon for common file extensions. */
+function fileIcon(name) {
+  const ext = (name.split('.').pop() || '').toLowerCase();
+  const map = {
+    rs: 'bi-filetype-rs', js: 'bi-filetype-js', ts: 'bi-filetype-ts',
+    html: 'bi-filetype-html', css: 'bi-filetype-css',
+    json: 'bi-filetype-json', md: 'bi-filetype-md',
+    toml: 'bi-file-code', yaml: 'bi-file-code', yml: 'bi-file-code',
+    lock: 'bi-file-earmark-lock', sql: 'bi-file-earmark-code',
+    png: 'bi-file-earmark-image', jpg: 'bi-file-earmark-image',
+    svg: 'bi-file-earmark-image', pdf: 'bi-file-earmark-pdf',
+    txt: 'bi-file-earmark-text', log: 'bi-file-earmark-text',
+  };
+  return map[ext] || 'bi-file-earmark';
+}
 
-    case 'partial_failure':
-      stopList.hidden = false;
-      partialBanner.hidden = false;
-      showStop(currentStopIndex);
-      break;
+/** @param {{path:string, name:string, size:number}} entry @param {HTMLElement} btn */
+async function previewEntry(entry, btn) {
+  document.querySelectorAll('.file-row').forEach(r => r.classList.remove('selected'));
+  btn.classList.add('selected');
 
-    case 'error':
-      errorPanel.hidden = false;
-      if (payload.message) $('#tour-error-msg').textContent = payload.message;
-      break;
+  const ext = (entry.name || entry.path).split('.').pop().toUpperCase();
+  $('#preview-kind').textContent = `${ext} FILE`;
+  $('#preview-name').textContent = entry.path;
+  $('#preview-size').textContent = bytes(entry.size || 0);
+  $('#preview-copy-btn').hidden = false;
+
+  const pre = $('#file-preview');
+  pre.textContent = 'Loading…';
+
+  try {
+    const content = await invoke('read_repo_file', { root: repoPath, relativePath: entry.path });
+    pre.textContent = content;
+    log(`Previewing <code>${esc(entry.path)}</code>`);
+  } catch (err) {
+    pre.innerHTML = `<span class="log-error">Cannot read file: ${esc(String(err))}</span>`;
   }
 }
 
 // ---------------------------------------------------------------------------
-// Trigger labels
+// Extraction
 // ---------------------------------------------------------------------------
 
-/**
- * @param {string} kind
- * @returns {string}
- */
-function triggerLabel(kind) {
-  const labels = {
-    revert:               'Revert',
-    was_reverted:         'Was reverted',
-    repeated_fix:         'Repeated fix',
-    incident_linked:      'Incident',
-    architecture_shaping: 'Architecture',
+/** @returns {Promise<void>} */
+async function runExtraction() {
+  const pathVal = $('#mining-repo-path').value.trim();
+  if (!pathVal) { toast('Enter a repository path first.', 'error'); return; }
+
+  let subsystems;
+  const raw = $('#subsystems-input').value.trim();
+  if (!raw) { toast('Define at least one subsystem (or auto-discover first).', 'error'); return; }
+  try { subsystems = JSON.parse(raw); }
+  catch (e) { toast(`Subsystems JSON is invalid: ${e.message}`, 'error'); return; }
+
+  const maxAge    = parseInt($('#max-age-input').value, 10) || null;
+  const maxCom    = parseInt($('#max-commits-input').value, 10) || null;
+
+  const config = {
+    repo_path: pathVal,
+    subsystems,
+    window: { max_age_days: maxAge, max_commits_per_subsystem: maxCom },
   };
-  return labels[kind] || kind;
+
+  const btn    = $('#run-mining-btn');
+  const status = $('#mining-status');
+  btn.disabled = true;
+  btn.innerHTML = '<div class="spinner" style="width:16px;height:16px;border-width:2px"></div> Extracting…';
+  status.textContent = 'Scanning commit history…';
+  $('#extraction-results').hidden = true;
+  log('Starting extraction…');
+
+  const t0 = performance.now();
+  try {
+    const result = await invoke('extract_git_history', { config });
+    const elapsed = ((performance.now() - t0) / 1000).toFixed(2);
+
+    window.miningOutput = result;
+
+    // Populate file list from commits' files_changed
+    const pathSet = new Set();
+    (result.commits || []).forEach(c => {
+      (c.files_changed || []).forEach(f => pathSet.add(f.path));
+    });
+    currentEntries = [...pathSet].sort().map(p => ({
+      path: p, kind: 'file',
+      name: p.split('/').pop(),
+      size: 0,
+    }));
+    renderEntries();
+
+    // Show results summary
+    showExtractionResults(result, elapsed);
+    status.textContent = `Done in ${elapsed}s — ${result.candidate_count} candidates found.`;
+
+    log(`Extracted ${result.total_commits_scanned} commits from ${result.subsystems_scanned.length} subsystem(s), found <strong>${result.candidate_count}</strong> candidates`, 'success');
+    toast(`${result.candidate_count} candidates found in ${elapsed}s`, 'success');
+
+    // Enable tour nav item
+    $('#nav-tour').disabled = false;
+    $('#nav-tour-count').textContent = result.candidate_count;
+    $('#nav-tour-count').hidden = false;
+
+  } catch (err) {
+    status.textContent = `Extraction failed.`;
+    log(`Extraction failed: ${esc(String(err))}`, 'error');
+    toast(String(err), 'error');
+  } finally {
+    btn.disabled = false;
+    btn.innerHTML = '<i class="bi bi-play-fill"></i> Run extraction';
+  }
+}
+
+/** @param {import('./types').MiningOutput} result @param {string} elapsed */
+function showExtractionResults(result, elapsed) {
+  const bar = $('#results-summary-bar');
+  bar.innerHTML = [
+    { value: result.total_commits_scanned, label: 'Commits scanned' },
+    { value: result.subsystems_scanned.length, label: 'Subsystems' },
+    { value: result.candidate_count, label: 'Candidates' },
+    { value: `${elapsed}s`, label: 'Duration' },
+  ].map(s => `
+    <div class="result-stat">
+      <span class="result-stat-value">${esc(String(s.value))}</span>
+      <span class="result-stat-label">${esc(s.label)}</span>
+    </div>`).join('');
+
+  $('#mining-output-pre').textContent = JSON.stringify(result, null, 2);
+  $('#extraction-results').hidden = false;
+}
+
+/** Auto-discover subsystems from the repo tree. */
+async function discoverSubsystems() {
+  const pathVal = $('#mining-repo-path').value.trim();
+  if (!pathVal) { toast('Enter a repository path first.', 'error'); return; }
+
+  const btn    = $('#discover-btn');
+  const status = $('#discover-status');
+  btn.disabled = true;
+  btn.innerHTML = '<div class="spinner" style="width:12px;height:12px;border-width:2px"></div> Scanning…';
+  status.textContent = 'Scanning repo tree…';
+
+  try {
+    const subs = await invoke('discover_repo_subsystems', { repoPath: pathVal });
+    $('#subsystems-input').value = JSON.stringify(subs, null, 2);
+    status.textContent = subs.length
+      ? `Found ${subs.length} subsystem(s) — review and edit before extracting.`
+      : 'No top-level directories found (everything at root may have been filtered).';
+    if (subs.length) toast(`${subs.length} subsystems discovered`, 'success');
+  } catch (err) {
+    status.textContent = `Discovery failed: ${String(err)}`;
+    toast(String(err), 'error');
+  } finally {
+    btn.disabled = false;
+    btn.innerHTML = '<i class="bi bi-magic"></i> Auto-discover';
+  }
 }
 
 // ---------------------------------------------------------------------------
-// Card builders
+// Ranking
 // ---------------------------------------------------------------------------
 
-/**
- * Build an animated skeleton placeholder card for index `i`.
- * @param {number} i
- * @returns {HTMLElement}
- */
-function buildSkeletonCard(i) {
-  const article = document.createElement('article');
-  article.className = 'tour-stop-skeleton';
-  article.dataset.index = String(i);
-  article.innerHTML = `
-    <div class="skeleton-line skeleton-line--short"></div>
-    <div class="skeleton-line skeleton-line--title"></div>
-    <div class="skeleton-line"></div>
-    <div class="skeleton-line skeleton-line--mid"></div>
-  `;
-  return article;
+function getCacheRoot() {
+  return (window.miningOutput?.repo_path || repoPath) + '/.ghost-cache';
 }
-
-/**
- * Replace the skeleton at `index` with a fully rendered stop card.
- * @param {object} stop  TourStop
- * @param {number} index
- */
-function renderStopCard(stop, index) {
-  const existing = $(`[data-index="${index}"]`);
-  if (!existing) return;
-
-  const formattedDate = stop.timestamp_utc
-    ? new Date(stop.timestamp_utc).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })
-    : '';
-
-  const triggerChips = (stop.triggered_by || [])
-    .map(k => `<span class="trigger-chip trigger-${k}">${triggerLabel(k)}</span>`)
-    .join('');
-
-  const linkedBadge = stop.linked_document
-    ? '<span class="linked-doc-badge">Issue context used</span>'
-    : '';
-
-  const narrationHtml = (stop.narration || '')
-    .split(/\n\n+/)
-    .filter(p => p.trim())
-    .map(p => `<p>${escapeHtml(p.trim())}</p>`)
-    .join('');
-
-  const filesHtml = (stop.files_changed || [])
-    .map(f => `<li><code>${escapeHtml(f)}</code></li>`)
-    .join('');
-
-  const article = document.createElement('article');
-  article.className = 'tour-stop-card';
-  article.dataset.index = String(index);
-  article.hidden = true; // showStop controls visibility
-
-  article.innerHTML = `
-    <header class="stop-header">
-      <span class="stop-sequence">Stop ${stop.sequence}</span>
-      <span class="stop-subsystem-badge">${escapeHtml(stop.subsystem || '')}</span>
-      <span class="stop-timestamp">${escapeHtml(formattedDate)}</span>
-      ${triggerChips}
-      ${linkedBadge}
-    </header>
-    <h2 class="stop-title">${escapeHtml(stop.title || '')}</h2>
-    <div class="stop-narration">${narrationHtml}</div>
-    <details class="stop-rationale">
-      <summary>Why this stop was selected</summary>
-      <p>${escapeHtml(stop.selection_rationale || '')}</p>
-    </details>
-    <div class="stop-files">
-      <p class="stop-files-label">Files changed</p>
-      <ul>${filesHtml}</ul>
-    </div>
-  `;
-
-  existing.replaceWith(article);
-  // If this is the current stop, make it visible immediately
-  if (index === currentStopIndex) showStop(currentStopIndex);
-}
-
-/**
- * Replace the skeleton at `index` with a stub error card.
- * @param {object} stub  StopStub
- * @param {number} index
- * @param {string} errMsg
- */
-function renderStopError(stub, index, errMsg) {
-  const existing = $(`[data-index="${index}"]`);
-  if (!existing) return;
-
-  const article = document.createElement('article');
-  article.className = 'tour-stop-card tour-stop-error';
-  article.dataset.index = String(index);
-  article.hidden = true;
-
-  article.innerHTML = `
-    <header class="stop-header">
-      <span class="stop-sequence">Stop ${stub.sequence}</span>
-      <span class="stop-subsystem-badge">${escapeHtml(stub.subsystem || '')}</span>
-    </header>
-    <h2 class="stop-title">Narration unavailable — API error</h2>
-    <p class="stop-error-detail">${escapeHtml(errMsg)}</p>
-    <details class="stop-rationale">
-      <summary>Why this stop was selected</summary>
-      <p>${escapeHtml(stub.selection_rationale || '')}</p>
-    </details>
-  `;
-
-  existing.replaceWith(article);
-  if (index === currentStopIndex) showStop(currentStopIndex);
-}
-
-// ---------------------------------------------------------------------------
-// Navigation
-// ---------------------------------------------------------------------------
-
-/** Show the stop card at `index`, hide all others, update the counter. */
-function showStop(index) {
-  const cards = document.querySelectorAll('#tour-cards-container [data-index]');
-  if (cards.length === 0) return;
-
-  // Clamp index to valid range
-  index = Math.max(0, Math.min(index, cards.length - 1));
-  currentStopIndex = index;
-
-  cards.forEach((card) => { card.hidden = true; });
-  const target = $(`#tour-cards-container [data-index="${index}"]`);
-  if (target) target.hidden = false;
-
-  updateNav();
-}
-
-/** Refresh the prev/next buttons and counter text. */
-function updateNav() {
-  const total = tourStopCount || document.querySelectorAll('#tour-cards-container [data-index]').length;
-  $('#tour-counter').textContent = `Stop ${currentStopIndex + 1} of ${total || '—'}`;
-  $('#tour-prev-btn').disabled = currentStopIndex <= 0;
-  $('#tour-next-btn').disabled = total === 0 || currentStopIndex >= total - 1;
-}
-
-// ---------------------------------------------------------------------------
-// Config helpers
-// ---------------------------------------------------------------------------
 
 function buildTourConfig() {
   const ghToken   = $('#gh-token-input')?.value?.trim() || null;
@@ -436,123 +386,426 @@ function buildTourConfig() {
   };
 }
 
-function getCacheRoot() {
-  return (window.miningOutput?.repo_path || '') + '/.ghost-cache';
-}
-
-// ---------------------------------------------------------------------------
-// Core generation flow
-// ---------------------------------------------------------------------------
-
+/**
+ * Run the full ranking + narration pipeline.
+ * Called from the tour section's "Generate tour" button.
+ */
 async function generateTour() {
-  const cfg = buildTourConfig();
+  if (!window.miningOutput) {
+    toast('Run extraction first.', 'error'); return;
+  }
 
+  const mining   = window.miningOutput;
+  const cfg      = buildTourConfig();
+  const cacheRoot = getCacheRoot();
+
+  // ── Step 1: rank ──────────────────────────────────────────────────────────
+  setTourState('ranking');
+  log('Ranking candidates…');
+
+  const candidates = mining.commits.map(c => ({ commit: c, pr: {} }));
+  const subsystems = mining.subsystems_scanned.map(name => ({
+    name,
+    path_prefixes: [],   // already filtered upstream; empty is safe
+  }));
+
+  let ranking;
+  try {
+    ranking = await invoke('rank_significant_commits', {
+      candidates,
+      repoPath: mining.repo_path,
+      cacheRoot,
+      subsystems,
+      cfg: null,  // use RankingConfig::default()
+    });
+    window.rankingOutput = ranking;
+    log(`Ranking complete — ${ranking.tour_candidates.length} tour stops selected`, 'success');
+    window.tourOnRankingReady?.();
+  } catch (err) {
+    setTourState('error', { message: `Ranking failed: ${err}` });
+    log(`Ranking failed: ${esc(String(err))}`, 'error');
+    return;
+  }
+
+  // ── Step 2: fetch docs ────────────────────────────────────────────────────
   setTourState('fetching_docs');
+  log('Fetching linked documents…');
 
   let stubs;
   try {
     stubs = await invoke('fetch_stop_documents', {
-      rankingOutput: window.rankingOutput,
-      miningOutput: window.miningOutput,
+      rankingOutput: ranking,
+      miningOutput: mining,
       cfg,
     });
+    log(`Gathered ${stubs.length} stop stubs`);
   } catch (err) {
-    setTourState('error', { message: String(err) });
+    setTourState('error', { message: `Doc fetch failed: ${err}` });
+    log(`Doc fetch failed: ${esc(String(err))}`, 'error');
     return;
   }
 
-  // Transition to narrating — skeleton cards are rendered inside setTourState
+  // ── Step 3: narrate (parallel) ────────────────────────────────────────────
   setTourState('narrating', { stubs });
+  log(`Narrating ${stubs.length} stops in parallel…`);
 
-  // Collect all evidence summaries for cross-stop context
   const allSummaries = stubs.map(s => s.evidence_summary);
 
-  // Fire all narrate_stop calls in parallel; render each stop as it resolves
-  const stopPromises = stubs.map((stub, i) => {
-    const otherEvidenceSummaries = allSummaries.filter((_, j) => j !== i);
+  const promises = stubs.map((stub, i) => {
+    const others = allSummaries.filter((_, j) => j !== i);
     return invoke('narrate_stop', {
       stub,
-      otherEvidenceSummaries,
-      repoPath: window.miningOutput?.repo_path || '',
-      cacheRoot: getCacheRoot(),
+      otherEvidenceSummaries: others,
+      repoPath: mining.repo_path,
+      cacheRoot,
       cfg,
     }).then(stop => {
       renderStopCard(stop, i);
-      return { ok: true, stop };
+      log(`Stop ${stop.sequence}: <em>${esc(stop.title)}</em>`, 'success');
+      return { ok: true };
     }).catch(err => {
       renderStopError(stub, i, String(err));
-      return { ok: false, stub, err: String(err) };
+      log(`Stop ${stub.sequence} narration failed: ${esc(String(err))}`, 'error');
+      return { ok: false };
     });
   });
 
-  const results = await Promise.allSettled(stopPromises);
+  const results  = await Promise.allSettled(promises);
   const anyFailed = results.some(r => r.status === 'fulfilled' && r.value?.ok === false);
   setTourState(anyFailed ? 'partial_failure' : 'ready');
+
+  const ok = results.filter(r => r.status === 'fulfilled' && r.value?.ok).length;
+  toast(`Tour ready — ${ok} of ${stubs.length} stops narrated`, anyFailed ? 'info' : 'success');
 }
 
 // ---------------------------------------------------------------------------
-// Utility
-// ---------------------------------------------------------------------------
-
-/** Escape a string for safe insertion into innerHTML. */
-function escapeHtml(str) {
-  return String(str)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;');
-}
-
-// ---------------------------------------------------------------------------
-// Wire up UI
+// Tour state machine
 // ---------------------------------------------------------------------------
 
 /**
- * Called once from DOMContentLoaded.  Attaches all tour-related event
- * listeners and sets the initial state of the "View tour" button.
+ * @param {'idle'|'ranking'|'fetching_docs'|'narrating'|'ready'|'partial_failure'|'error'} state
+ * @param {{ message?: string, stubs?: object[] }} [payload]
  */
-function initTourUI() {
-  // Back to overview
-  $('#tour-back-btn').addEventListener('click', () => {
-    $('#tour-section').hidden = true;
-    $('#workspace').hidden = false;
+function setTourState(state, payload = {}) {
+  tourState = state;
+
+  const panels = ['tour-idle', 'tour-ranking', 'tour-fetching', 'tour-error', 'tour-stop-list'];
+  panels.forEach(id => { const el = $('#' + id); if (el) el.hidden = true; });
+  $('#tour-partial-banner').hidden = true;
+
+  switch (state) {
+    case 'idle': {
+      $('#tour-idle').hidden = false;
+      const count = window.rankingOutput?.tour_candidates?.length ?? 0;
+      $('#tour-candidate-count').textContent = count > 0 ? String(count) : '—';
+      break;
+    }
+    case 'ranking':
+      $('#tour-ranking').hidden = false;
+      break;
+
+    case 'fetching_docs':
+      $('#tour-fetching').hidden = false;
+      break;
+
+    case 'narrating': {
+      $('#tour-stop-list').hidden = false;
+      if (payload.stubs) {
+        tourStopCount = payload.stubs.length;
+        const container = $('#tour-cards-container');
+        container.innerHTML = '';
+        payload.stubs.forEach((_, i) => container.appendChild(buildSkeletonCard(i)));
+        currentStopIndex = 0;
+        updateNav();
+      }
+      break;
+    }
+
+    case 'ready':
+      $('#tour-stop-list').hidden = false;
+      showStop(currentStopIndex);
+      break;
+
+    case 'partial_failure':
+      $('#tour-stop-list').hidden = false;
+      $('#tour-partial-banner').hidden = false;
+      showStop(currentStopIndex);
+      break;
+
+    case 'error':
+      $('#tour-error').hidden = false;
+      if (payload.message) $('#tour-error-msg').textContent = payload.message;
+      break;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Tour card builders
+// ---------------------------------------------------------------------------
+
+/** @param {number} i */
+function buildSkeletonCard(i) {
+  const el = document.createElement('article');
+  el.className = 'tour-stop-skeleton';
+  el.dataset.index = String(i);
+  el.innerHTML = `
+    <div class="sk-line sk-line--xs"></div>
+    <div class="sk-line sk-line--title"></div>
+    <div class="sk-line sk-line--full"></div>
+    <div class="sk-line sk-line--full"></div>
+    <div class="sk-line sk-line--mid"></div>
+  `;
+  return el;
+}
+
+/** @param {object} stop  TourStop @param {number} index */
+function renderStopCard(stop, index) {
+  const existing = $(`[data-index="${index}"]`);
+  if (!existing) return;
+
+  const date = stop.timestamp_utc
+    ? new Date(stop.timestamp_utc).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })
+    : '';
+
+  const chips = (stop.triggered_by || [])
+    .map(k => `<span class="trigger-chip trigger-${k}">${triggerLabel(k)}</span>`)
+    .join('');
+
+  const linkedBadge = stop.linked_document
+    ? '<span class="linked-doc-badge"><i class="bi bi-link-45deg"></i> Issue context</span>' : '';
+
+  const narration = (stop.narration || '')
+    .split(/\n\n+/)
+    .filter(p => p.trim())
+    .map(p => `<p>${esc(p.trim())}</p>`)
+    .join('');
+
+  const filesHtml = (stop.files_changed || [])
+    .map(f => `<li><code>${esc(f)}</code></li>`)
+    .join('');
+
+  const article = document.createElement('article');
+  article.className = 'tour-stop-card';
+  article.dataset.index = String(index);
+  article.hidden = true;
+
+  article.innerHTML = `
+    <header class="stop-header">
+      <span class="stop-sequence">Stop ${stop.sequence}</span>
+      <span class="stop-subsystem-badge">${esc(stop.subsystem || '')}</span>
+      <span class="stop-timestamp">${esc(date)}</span>
+      ${chips}
+      ${linkedBadge}
+    </header>
+    <h2 class="stop-title">${esc(stop.title || '')}</h2>
+    <div class="stop-narration">${narration}</div>
+    <details class="stop-rationale">
+      <summary>
+        <i class="bi bi-chevron-right rationale-chevron"></i>
+        Why this stop was selected
+      </summary>
+      <p>${esc(stop.selection_rationale || '')}</p>
+    </details>
+    <div class="stop-files">
+      <p class="stop-files-label">Files changed</p>
+      <ul>${filesHtml}</ul>
+    </div>
+  `;
+
+  existing.replaceWith(article);
+  if (index === currentStopIndex) showStop(currentStopIndex);
+}
+
+/** @param {object} stub  StopStub @param {number} index @param {string} errMsg */
+function renderStopError(stub, index, errMsg) {
+  const existing = $(`[data-index="${index}"]`);
+  if (!existing) return;
+
+  const article = document.createElement('article');
+  article.className = 'tour-stop-card tour-stop-error';
+  article.dataset.index = String(index);
+  article.hidden = true;
+
+  article.innerHTML = `
+    <header class="stop-header">
+      <span class="stop-sequence">Stop ${stub.sequence}</span>
+      <span class="stop-subsystem-badge">${esc(stub.subsystem || '')}</span>
+    </header>
+    <h2 class="stop-title">Narration unavailable — API error</h2>
+    <p class="stop-error-detail">${esc(errMsg)}</p>
+    <details class="stop-rationale">
+      <summary>
+        <i class="bi bi-chevron-right rationale-chevron"></i>
+        Why this stop was selected
+      </summary>
+      <p>${esc(stub.selection_rationale || '')}</p>
+    </details>
+  `;
+
+  existing.replaceWith(article);
+  if (index === currentStopIndex) showStop(currentStopIndex);
+}
+
+// ---------------------------------------------------------------------------
+// Tour navigation
+// ---------------------------------------------------------------------------
+
+function showStop(index) {
+  const cards = document.querySelectorAll('#tour-cards-container [data-index]');
+  if (!cards.length) return;
+  index = Math.max(0, Math.min(index, cards.length - 1));
+  currentStopIndex = index;
+  cards.forEach(c => { c.hidden = true; });
+  const target = $(`#tour-cards-container [data-index="${index}"]`);
+  if (target) target.hidden = false;
+  updateNav();
+}
+
+// Expose for commit_graph.js click handler
+window.showTourStop = showStop;
+
+function updateNav() {
+  const total = tourStopCount || document.querySelectorAll('#tour-cards-container [data-index]').length;
+  $('#tour-counter').textContent = `Stop ${currentStopIndex + 1} of ${total || '—'}`;
+  $('#tour-prev-btn').disabled = currentStopIndex <= 0;
+  $('#tour-next-btn').disabled = !total || currentStopIndex >= total - 1;
+}
+
+function triggerLabel(kind) {
+  return { revert: 'Revert', was_reverted: 'Was reverted', repeated_fix: 'Repeated fix',
+           incident_linked: 'Incident', architecture_shaping: 'Architecture' }[kind] || kind;
+}
+
+// ---------------------------------------------------------------------------
+// tourOnRankingReady hook (extended by commit_graph.js & architecture_diagram.js)
+// ---------------------------------------------------------------------------
+window.tourOnRankingReady = function tourOnRankingReady() {
+  const count = window.rankingOutput?.tour_candidates?.length ?? 0;
+  if (count > 0) {
+    const badge = $('#nav-tour-count');
+    badge.textContent = count;
+    badge.hidden = false;
+    $('#nav-tour').disabled = false;
+    // Update idle panel count if tour section is already open
+    if (!$('#view-tour').hidden && tourState === 'idle') {
+      setTourState('idle');
+    }
+  }
+};
+
+// ---------------------------------------------------------------------------
+// Dark mode
+// ---------------------------------------------------------------------------
+
+function applyTheme(dark) {
+  document.body.classList.toggle('dark', dark);
+  const icon = $('#theme-icon');
+  icon.className = dark ? 'bi bi-sun-fill' : 'bi bi-moon-stars-fill';
+  try { localStorage.setItem('gl-dark', dark ? '1' : '0'); } catch {}
+}
+
+// ---------------------------------------------------------------------------
+// Init & event wiring
+// ---------------------------------------------------------------------------
+
+window.addEventListener('DOMContentLoaded', () => {
+
+  // ── Theme ──────────────────────────────────────────────────────────────────
+  const savedDark = (() => { try { return localStorage.getItem('gl-dark') === '1'; } catch { return false; } })();
+  applyTheme(savedDark);
+  $('#theme-toggle').addEventListener('click', () => applyTheme(!document.body.classList.contains('dark')));
+
+  // ── Welcome / folder ───────────────────────────────────────────────────────
+  $('#choose-folder-btn').addEventListener('click', chooseFolder);
+  $('#change-folder-btn').addEventListener('click', chooseFolder);
+  $('#sidebar-repo-btn').addEventListener('click', () => repoPath ? showView('workspace') : chooseFolder());
+
+  // ── Sidebar nav ────────────────────────────────────────────────────────────
+  $('#nav-overview').addEventListener('click', () => {
+    if (repoPath) showView('workspace');
+    else chooseFolder();
   });
 
-  // View tour button in workspace header
-  $('#view-tour-btn').addEventListener('click', () => {
-    $('#workspace').hidden = true;
-    $('#tour-section').hidden = false;
-    // Only reset to idle if we haven't started yet
+  $('#nav-files').addEventListener('click', () => {
+    if (!repoPath) { chooseFolder(); return; }
+    showView('workspace');
+    setTimeout(() => $('#file-list')?.scrollIntoView({ behavior: 'smooth', block: 'nearest' }), 80);
+  });
+
+  $('#nav-tour').addEventListener('click', () => {
+    if (!window.miningOutput) { toast('Run extraction first.', 'error'); return; }
+    showView('tour');
     if (tourState === 'idle') setTourState('idle');
   });
 
-  // Generate / retry buttons
-  $('#generate-tour-btn').addEventListener('click', () => generateTour());
-  $('#tour-retry-btn').addEventListener('click', () => generateTour());
+  // ── Overview actions ───────────────────────────────────────────────────────
+  $('#git-pull-btn').addEventListener('click', async () => {
+    if (!repoPath) { toast('No repository open.', 'error'); return; }
+    // git_pull is not a registered command; show a user-friendly message
+    toast('Use your terminal: git pull --ff-only', 'info');
+    log('Tip: run <code>git pull --ff-only</code> in your terminal, then re-open the folder.');
+  });
 
-  // Navigation buttons
+  $('#run-extraction-btn').addEventListener('click', () => {
+    if (!repoPath) { chooseFolder().then(p => p && showView('extraction')); return; }
+    $('#mining-repo-path').value = repoPath;
+    showView('extraction');
+  });
+
+  // ── File search ────────────────────────────────────────────────────────────
+  $('#file-search').addEventListener('input', e => renderEntries(e.target.value));
+
+  // ── Preview copy ──────────────────────────────────────────────────────────
+  $('#preview-copy-btn').addEventListener('click', () => {
+    const text = $('#file-preview').textContent;
+    navigator.clipboard.writeText(text).then(() => toast('Copied to clipboard', 'success'));
+  });
+
+  // ── Clear log ─────────────────────────────────────────────────────────────
+  $('#clear-log-btn').addEventListener('click', () => {
+    $('#activity-log').innerHTML = '<p><i class="bi bi-circle-fill log-dot"></i> Log cleared.</p>';
+  });
+
+  // ── Extraction wizard ──────────────────────────────────────────────────────
+  $('#extraction-back-btn').addEventListener('click', () => showView('workspace'));
+
+  $('#mining-browse-btn').addEventListener('click', async () => {
+    const p = await chooseFolder();
+    if (p) $('#mining-repo-path').value = p;
+  });
+
+  $('#discover-btn').addEventListener('click', discoverSubsystems);
+
+  $('#run-mining-btn').addEventListener('click', runExtraction);
+
+  $('#proceed-to-tour-btn').addEventListener('click', () => {
+    showView('tour');
+    setTourState('idle');
+  });
+
+  $('#toggle-raw-output-btn').addEventListener('click', () => {
+    const det = $('#raw-output-details');
+    det.open = !det.open;
+  });
+
+  // ── Tour ───────────────────────────────────────────────────────────────────
+  $('#tour-back-btn').addEventListener('click', () => showView('extraction'));
+
+  $('#generate-tour-btn').addEventListener('click', generateTour);
+  $('#tour-retry-btn').addEventListener('click', generateTour);
+
   $('#tour-prev-btn').addEventListener('click', () => showStop(currentStopIndex - 1));
   $('#tour-next-btn').addEventListener('click', () => showStop(currentStopIndex + 1));
 
-  // Keyboard navigation (only when tour section is visible)
-  document.addEventListener('keydown', (e) => {
-    if ($('#tour-section').hidden) return;
+  // Keyboard navigation when tour is visible
+  document.addEventListener('keydown', e => {
+    if ($('#view-tour').hidden) return;
     if (e.key === 'ArrowLeft')  showStop(currentStopIndex - 1);
     if (e.key === 'ArrowRight') showStop(currentStopIndex + 1);
   });
 
-  // Show "View tour" button whenever rankingOutput becomes available.
-  // External code (extraction/ranking panels) should call tourOnRankingReady()
-  // after setting window.rankingOutput.
-  window.tourOnRankingReady = function tourOnRankingReady() {
-    const count = window.rankingOutput?.tour_candidates?.length ?? 0;
-    if (count > 0) {
-      $('#view-tour-btn').hidden = false;
-      // If tour section is already open and idle, refresh the candidate count
-      if (!$('#tour-section').hidden && tourState === 'idle') {
-        setTourState('idle');
-      }
-    }
-  };
-}
+  // Tour tourNavigate event from commit_graph.js
+  document.addEventListener('tourNavigate', e => {
+    showStop(e.detail.rank - 1);
+  });
+});
