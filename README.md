@@ -22,28 +22,28 @@
 ---
 
 # IBM Bob Usage
-Robinson George Arysseril
+## Robinson George Arysseril
 <img width="388" height="207" alt="image" src="https://github.com/user-attachments/assets/80d74089-2f72-4325-b632-d6ee537b4c47" />
 <img width="382" height="198" alt="image" src="https://github.com/user-attachments/assets/aeff9643-1589-4220-9cce-4940c07c8b31" />
 
-Tessa Mariya
+## Tessa Mariya
 <img width="721" height="723" alt="image" src="https://github.com/user-attachments/assets/9e01e4d6-9403-4661-a5d9-0a47404e367d" />
 <img width="729" height="752" alt="image" src="https://github.com/user-attachments/assets/d22e11ed-c95e-4542-96ba-70cf6582a962" />
 
-Rosmi Reji
+## Rosmi Reji
 <img width="875" height="340" alt="image" src="https://github.com/user-attachments/assets/d7e89898-15cc-478d-84c2-c452a509b42d" />
 <img width="885" height="332" alt="image" src="https://github.com/user-attachments/assets/67b4f886-f725-4c77-bcc6-5d39e8b47b9c" />
 
-Evan Biju
+## Evan Biju
 <img width="486" height="322" alt="image" src="https://github.com/user-attachments/assets/aa0a6cba-eac6-4fee-8dc4-52ab61b9cdaa" />
 <img width="786" height="372" alt="image" src="https://github.com/user-attachments/assets/bb62d271-c825-44d3-ac05-89f7a2d4583b" />
 <img width="530" height="266" alt="image" src="https://github.com/user-attachments/assets/312cfb02-5e76-41cc-9972-74da280eb75d" />
 
-Flavia 
+## Flavia 
 <img width="282" height="377" alt="image" src="https://github.com/user-attachments/assets/ce01ca83-a0bd-4be0-b0a8-ea97ad20b56c" />
 
-Dhanush
-
+## Dhanush
+---
 ## What it does
 
 Point Onboarding Ghost at any local git repository and it will:
