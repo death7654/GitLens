@@ -10,7 +10,40 @@
 > narrated, click-through **tour**.
 
 ---
+# Project Screenshots
+<img width="1277" height="819" alt="image" src="https://github.com/user-attachments/assets/dd71fa49-2706-4151-aa11-19443ed86a2b" />
+<img width="1277" height="819" alt="image" src="https://github.com/user-attachments/assets/e5045958-fef6-4cbc-9696-56ab355a1201" />
+<img width="1277" height="819" alt="image" src="https://github.com/user-attachments/assets/9e8a88dc-e2be-424c-87d1-66d0aaed0889" />
+<img width="1277" height="819" alt="image" src="https://github.com/user-attachments/assets/d81cb1d3-f1c8-4cf5-97da-346d3e3cbaf3" />
+<img width="1277" height="819" alt="image" src="https://github.com/user-attachments/assets/5f80bf2c-f3fe-4624-a0c8-f6f4f90768c3" />
+<img width="1277" height="819" alt="image" src="https://github.com/user-attachments/assets/73318f73-3a7f-46e2-b693-2ae66b8d5e97" />
+<img width="1277" height="819" alt="image" src="https://github.com/user-attachments/assets/cfebcc2e-838a-4346-aa4c-075e885a8c5b" />
 
+---
+
+# IBM Bob Usage
+## Robinson George Arysseril
+<img width="388" height="207" alt="image" src="https://github.com/user-attachments/assets/80d74089-2f72-4325-b632-d6ee537b4c47" />
+<img width="382" height="198" alt="image" src="https://github.com/user-attachments/assets/aeff9643-1589-4220-9cce-4940c07c8b31" />
+
+## Tessa Mariya
+<img width="721" height="723" alt="image" src="https://github.com/user-attachments/assets/9e01e4d6-9403-4661-a5d9-0a47404e367d" />
+<img width="729" height="752" alt="image" src="https://github.com/user-attachments/assets/d22e11ed-c95e-4542-96ba-70cf6582a962" />
+
+## Rosmi Reji
+<img width="875" height="340" alt="image" src="https://github.com/user-attachments/assets/d7e89898-15cc-478d-84c2-c452a509b42d" />
+<img width="885" height="332" alt="image" src="https://github.com/user-attachments/assets/67b4f886-f725-4c77-bcc6-5d39e8b47b9c" />
+
+## Evan Biju
+<img width="486" height="322" alt="image" src="https://github.com/user-attachments/assets/aa0a6cba-eac6-4fee-8dc4-52ab61b9cdaa" />
+<img width="786" height="372" alt="image" src="https://github.com/user-attachments/assets/bb62d271-c825-44d3-ac05-89f7a2d4583b" />
+<img width="530" height="266" alt="image" src="https://github.com/user-attachments/assets/312cfb02-5e76-41cc-9972-74da280eb75d" />
+
+## Flavia 
+<img width="282" height="377" alt="image" src="https://github.com/user-attachments/assets/ce01ca83-a0bd-4be0-b0a8-ea97ad20b56c" />
+
+## Dhanush
+---
 ## What it does
 
 Point Onboarding Ghost at any local git repository and it will:
