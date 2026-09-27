@@ -1,32 +1,33 @@
-//! Test-only `ModelProvider`.
+//! Test-only [`ModelProvider`] implementation.
 //!
-//! Returns a shape that matches each request's schema by delegating to
-//! `testing_api::dummy_response` — which handles file summaries, commit
-//! summaries, ranking (with real hash echoing), and prose calls.
+//! Delegates generic schema/prose requests to [`testing_api::dummy_response`],
+//! which covers all request shapes (file summaries, commit summaries, ranking
+//! with real hash echoing, and prose). Narration requests are handled by the
+//! `MOCK_TRIGGER:` hint path below.
 //!
-//! ## Hint lines (all optional, parsed from `req.user`)
+//! ## Hint lines (all optional, embedded anywhere in `req.user`)
 //!
-//! | Hint                   | Effect                                                        |
-//! |------------------------|---------------------------------------------------------------|
-//! | `MOCK_TRIGGER: <kind>` | Returns canned narration JSON for the given `TriggerKind`.   |
-//! | `MOCK_FAIL_HASH`       | Always returns `Err` — triggers the partial-failure UI path. |
-//! | `MOCK_LATENCY_MS: <n>` | Sleeps for `n` milliseconds before responding.               |
+//! | Hint                   | Effect                                                         |
+//! |------------------------|----------------------------------------------------------------|
+//! | `MOCK_TRIGGER: <kind>` | Returns canned narration JSON for the given `TriggerKind`.    |
+//! | `MOCK_FAIL_HASH`       | Always returns `Err` — exercises the partial-failure UI path. |
+//! | `MOCK_LATENCY_MS: <n>` | Sleeps `n` ms before responding — exercises loading states.   |
 //!
-//! `MOCK_FAIL_HASH` is checked before any other dispatch so it reliably fires
-//! regardless of which other hints are present.
+//! `MOCK_FAIL_HASH` is checked first so it fires regardless of which other
+//! hints are present. `MOCK_TRIGGER:` parsing and canned responses are
+//! confined to this file and do not touch `TriggerKind` or production types.
 //!
-//! The `MOCK_TRIGGER:` parsing and canned responses live ONLY in this file.
-//! They must not leak into `TriggerKind` or any production schema.
-//!
-//! NOT for production use.
+//! Activate at runtime by setting `GITLENS_MOCK_PROVIDER=1` (see `lib.rs`).
 
 use crate::provider::{ModelProvider, ModelRequest, ModelResponse};
 use crate::testing_api;
 
-/// Hardcoded hash that always causes `MockProvider::call` to return `Err`.
+/// Hardcoded commit hash that always causes [`MockProvider::call`] to return
+/// `Err`, exercising the partial-failure UI path.
 ///
-/// Workstream D must ensure this hash is produced by a fixture commit with
-/// pinned dates so it is stable across machines.
+/// The value is an all-zeros SHA-1 suffix with a `1` at the end, which is
+/// not a valid git object hash in any real repository. Tests that deliberately
+/// trigger errors should embed this string anywhere in `req.user`.
 pub const MOCK_FAIL_HASH: &str = "0000000000000000000000000000000000000001";
 
 pub struct MockProvider;

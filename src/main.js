@@ -1,22 +1,22 @@
 /**
  * main.js — GitLens frontend
  *
- * Wires the HTML shell to the Tauri IPC backend.
- * Real commands available:
- *   extract_git_history(config: MiningConfig)        → MiningOutput
- *   discover_repo_subsystems(repoPath: string)        → SubsystemDef[]
+ * Tauri IPC commands (defined in src-tauri/src/lib.rs and submodules):
+ *   read_repo_file(root, relativePath)               → string
+ *   extract_git_history(config)                      → MiningOutput
+ *   discover_repo_subsystems(repoPath)               → SubsystemDef[]
  *   rank_significant_commits(candidates, repoPath,
- *     cacheRoot, subsystems, cfg?)                    → RankingOutput
- *   fetch_stop_documents(rankingOutput, miningOutput, cfg) → StopStub[]
+ *     cacheRoot, subsystems, cfg?)                   → RankingOutput
+ *   fetch_stop_documents(rankingOutput,
+ *     miningOutput, cfg?)                            → StopStub[]
  *   narrate_stop(stub, otherEvidenceSummaries,
- *     repoPath, cacheRoot, cfg)                       → TourStop
+ *     repoPath, cacheRoot, cfg?)                     → TourStop
  *
- * NOTE: inspect_folder / read_repo_file / git_pull are NOT available.
- * Folder browsing uses the Tauri dialog API; repo info is derived from
- * extract_git_history results.
+ * Folder picking uses tauri-plugin-dialog (open() with directory:true).
+ * `withGlobalTauri: true` in tauri.conf.json exposes these as
+ * window.__TAURI__.core and window.__TAURI__.dialog.
  */
 
-// Tauri IPC — available via window.__TAURI__ injected by the Tauri runtime.
 const { invoke } = window.__TAURI__.core;
 const { open }   = window.__TAURI__.dialog;
 
@@ -111,14 +111,15 @@ function showView(name) {
 // ---------------------------------------------------------------------------
 
 /**
- * Open the native folder picker and update repoPath + UI.
- * Returns the chosen path, or null if cancelled.
+ * Open the native OS folder picker (tauri-plugin-dialog) and load the result.
+ * Returns the chosen path string, or null if the user cancelled.
  * @returns {Promise<string|null>}
  */
 async function chooseFolder() {
   try {
+    // open() returns a string (single selection) or null if cancelled.
     const chosen = await open({ directory: true, multiple: false, title: 'Choose a repository folder' });
-    if (typeof chosen !== 'string') return null;
+    if (!chosen || typeof chosen !== 'string') return null;
     repoPath = chosen;
     applyRepoPath(repoPath);
     return repoPath;
@@ -129,8 +130,9 @@ async function chooseFolder() {
 }
 
 /**
- * Apply a repo path to all persistent UI slots without doing any I/O.
- * @param {string} path
+ * Update every UI element that displays the repo name or path, then switch to
+ * the workspace view. Does no I/O — call after chooseFolder() resolves.
+ * @param {string} path  Absolute path to the repository root.
  */
 function applyRepoPath(path) {
   if (!path) return;
@@ -162,8 +164,10 @@ function applyRepoPath(path) {
 }
 
 // ---------------------------------------------------------------------------
-// File explorer (backed by the MiningOutput file list as a fallback;
-// we use discover_repo_subsystems just for subsystem discovery, not file listing)
+// File explorer
+//
+// Entries are populated from MiningOutput.commits[].files_changed after
+// extraction runs. Before extraction the list is empty.
 // ---------------------------------------------------------------------------
 
 /** @type {Array<{path:string, kind:'file'|'directory', size:number, name:string}>} */
@@ -219,7 +223,13 @@ function fileIcon(name) {
   return map[ext] || 'bi-file-earmark';
 }
 
-/** @param {{path:string, name:string, size:number}} entry @param {HTMLElement} btn */
+/**
+ * Load and display a file in the preview panel using the read_repo_file command.
+ * The command canonicalises the path server-side and rejects anything that
+ * escapes the repo root or is not valid UTF-8.
+ * @param {{path:string, name:string, size:number}} entry
+ * @param {HTMLElement} btn  The file-row button to mark as selected.
+ */
 async function previewEntry(entry, btn) {
   document.querySelectorAll('.file-row').forEach(r => r.classList.remove('selected'));
   btn.classList.add('selected');
@@ -238,7 +248,7 @@ async function previewEntry(entry, btn) {
     pre.textContent = content;
     log(`Previewing <code>${esc(entry.path)}</code>`);
   } catch (err) {
-    pre.innerHTML = `<span class="log-error">Cannot read file: ${esc(String(err))}</span>`;
+    pre.innerHTML = `<span class="log-error">${esc(String(err))}</span>`;
   }
 }
 
@@ -361,13 +371,21 @@ async function discoverSubsystems() {
 }
 
 // ---------------------------------------------------------------------------
-// Ranking
+// Tour config & cache
 // ---------------------------------------------------------------------------
 
+/** Cache directory written next to the repository root at runtime. */
 function getCacheRoot() {
   return (window.miningOutput?.repo_path || repoPath) + '/.ghost-cache';
 }
 
+/**
+ * Build a TourConfig from the credentials panel inputs.
+ * model_id defaults to 'gemini-1.5-pro' — matches TourConfig::default() in
+ * tour_types.rs. fetch_linked_documents is enabled only when at least one
+ * token is provided (the backend enforces the same check and will error if
+ * the flag is true but no token is present).
+ */
 function buildTourConfig() {
   const ghToken   = $('#gh-token-input')?.value?.trim() || null;
   const repoSlug  = $('#repo-slug-input')?.value?.trim() || null;
@@ -387,26 +405,37 @@ function buildTourConfig() {
 }
 
 /**
- * Run the full ranking + narration pipeline.
- * Called from the tour section's "Generate tour" button.
+ * Full three-step pipeline triggered by "Generate tour".
+ *
+ * Step 1 — rank_significant_commits: scores every candidate commit and
+ *   selects 10-15 tour stops using the model provider.
+ * Step 2 — fetch_stop_documents: optionally fetches linked GitHub / Jira
+ *   issue bodies and assembles StopStub objects for each ranked candidate.
+ * Step 3 — narrate_stop (parallel): fires one narrate_stop call per stub
+ *   concurrently, rendering each stop card as its promise resolves.
  */
 async function generateTour() {
   if (!window.miningOutput) {
     toast('Run extraction first.', 'error'); return;
   }
 
-  const mining   = window.miningOutput;
-  const cfg      = buildTourConfig();
+  const mining    = window.miningOutput;
+  const cfg       = buildTourConfig();
   const cacheRoot = getCacheRoot();
 
-  // ── Step 1: rank ──────────────────────────────────────────────────────────
+  // Step 1: rank
   setTourState('ranking');
   log('Ranking candidates…');
 
+  // Wrap each CommitRecord in the CandidateInput shape the backend expects.
+  // The `pr` field is optional enrichment (PR comment counts, linked issues,
+  // etc.) — we pass an empty object since this data isn't available locally.
   const candidates = mining.commits.map(c => ({ commit: c, pr: {} }));
+  // Subsystem definitions only need names here; path_prefixes were already
+  // used during extraction and are not consulted again by the ranker.
   const subsystems = mining.subsystems_scanned.map(name => ({
     name,
-    path_prefixes: [],   // already filtered upstream; empty is safe
+    path_prefixes: [],
   }));
 
   let ranking;
@@ -416,7 +445,7 @@ async function generateTour() {
       repoPath: mining.repo_path,
       cacheRoot,
       subsystems,
-      cfg: null,  // use RankingConfig::default()
+      cfg: null,  // null → RankingConfig::default() (target 10-15 stops)
     });
     window.rankingOutput = ranking;
     log(`Ranking complete — ${ranking.tour_candidates.length} tour stops selected`, 'success');
@@ -427,7 +456,7 @@ async function generateTour() {
     return;
   }
 
-  // ── Step 2: fetch docs ────────────────────────────────────────────────────
+  // Step 2: fetch stop documents
   setTourState('fetching_docs');
   log('Fetching linked documents…');
 
@@ -445,7 +474,7 @@ async function generateTour() {
     return;
   }
 
-  // ── Step 3: narrate (parallel) ────────────────────────────────────────────
+  // Step 3: narrate all stops in parallel; render each card as it resolves.
   setTourState('narrating', { stubs });
   log(`Narrating ${stubs.length} stops in parallel…`);
 
@@ -483,6 +512,17 @@ async function generateTour() {
 // ---------------------------------------------------------------------------
 
 /**
+ * Switch the tour section into a new state, showing/hiding sub-panels.
+ *
+ * States:
+ *   idle            — waiting for user to click "Generate tour"
+ *   ranking         — rank_significant_commits in flight
+ *   fetching_docs   — fetch_stop_documents in flight
+ *   narrating       — narrate_stop calls in flight; skeleton cards visible
+ *   ready           — all stops narrated successfully
+ *   partial_failure — some stops failed; partial banner shown
+ *   error           — a blocking step failed; retry available
+ *
  * @param {'idle'|'ranking'|'fetching_docs'|'narrating'|'ready'|'partial_failure'|'error'} state
  * @param {{ message?: string, stubs?: object[] }} [payload]
  */
