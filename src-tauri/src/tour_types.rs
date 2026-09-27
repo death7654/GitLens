@@ -101,11 +101,18 @@ impl Default for TourConfig {
     fn default() -> Self {
         Self {
             narration_prompt_version: "v1".into(),
-            // See the matching comment in significance_ranking_types.rs —
-            // "gemini-flash-latest" tracks Google's current recommended
-            // model rather than a version string that can be retired.
-            model_id: "gemini-flash-latest".into(),
-            temperature: 0.3,
+            // GITLENS_MODEL_ID overrides the default so OpenAI-provider users
+            // can point at e.g. "gpt-4o" without touching the frontend.
+            // Falls back to "gemini-flash-latest" for the Gemini provider.
+            model_id: std::env::var("GITLENS_MODEL_ID")
+                .ok()
+                .filter(|v| !v.trim().is_empty())
+                .unwrap_or_else(|| "gemini-flash-latest".into()),
+            // GITLENS_NARRATION_TEMPERATURE overrides the default (0.3).
+            temperature: std::env::var("GITLENS_NARRATION_TEMPERATURE")
+                .ok()
+                .and_then(|v| v.trim().parse::<f32>().ok())
+                .unwrap_or(0.3),
             max_narration_tokens: 1024,
             fetch_linked_documents: false,
             github_token: None,
