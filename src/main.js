@@ -473,8 +473,9 @@ function getCacheRoot() {
 
 /**
  * Build a TourConfig from the credentials panel inputs.
- * model_id defaults to 'gemini-1.5-pro' — matches TourConfig::default() in
- * tour_types.rs. fetch_linked_documents is enabled only when at least one
+ * model_id defaults to 'gemini-flash-latest' — matches TourConfig::default()
+ * in tour_types.rs (a Google-maintained alias, not a pinned version that can
+ * be retired). fetch_linked_documents is enabled only when at least one
  * token is provided (the backend enforces the same check and will error if
  * the flag is true but no token is present).
  */
@@ -485,7 +486,7 @@ function buildTourConfig() {
   const jiraToken = $('#jira-token-input')?.value?.trim() || null;
   return {
     narration_prompt_version: 'v1',
-    model_id: 'gemini-1.5-pro',
+    model_id: 'gemini-flash-latest',
     temperature: 0.3,
     max_narration_tokens: 1024,
     fetch_linked_documents: !!(ghToken || jiraToken),

@@ -111,7 +111,12 @@ impl Default for RankingConfig {
     fn default() -> Self {
         Self {
             prompt_version: "v1".into(),
-            model_id: "gemini-1.5-pro".into(),
+            // "gemini-flash-latest" is a Google-maintained alias that always
+            // points at their current recommended fast/general-purpose
+            // model, so it won't go stale the way a pinned version (e.g. the
+            // now-retired "gemini-1.5-pro") eventually does. Override with
+            // "gemini-pro-latest" for the heavier reasoning tier if needed.
+            model_id: "gemini-flash-latest".into(),
             temperature: 0.1,
             target_min: 10,
             target_max: 15,

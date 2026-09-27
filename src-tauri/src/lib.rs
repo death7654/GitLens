@@ -1,5 +1,6 @@
 mod bob_provider;
 mod doc_fetch;
+mod gemini_provider;
 mod git_mining;
 mod mock_provider;
 mod provider;
@@ -51,9 +52,9 @@ fn read_repo_file(root: String, relative_path: String) -> Result<String, String>
 /// Holds the active `ModelProvider` for the lifetime of the app.
 ///
 /// Provider selection at startup (in priority order):
-///   1. `GITLENS_MOCK_PROVIDER=1`  → `MockProvider`  (test / CI)
-///   2. `MODEL_PROVIDER=bob`       → `BobShellProvider` (needs `BOB_API_KEY`)
-///   3. default                    → `StubProvider`  (returns an error on every call)
+///   1. `GITLENS_MOCK_PROVIDER=1`  → `MockProvider`   (test / CI)
+///   2. `GEMINI_API_KEY` is set    → `GeminiProvider`  (calls the Gemini API directly)
+///   3. default                    → `StubProvider`   (returns an error on every call)
 pub struct ProviderState {
     pub provider: Arc<dyn ModelProvider>,
 }
@@ -65,7 +66,7 @@ impl ModelProvider for StubProvider {
     async fn call(&self, _req: provider::ModelRequest) -> Result<provider::ModelResponse, String> {
         Err(
             "No model provider is configured. \
-             Set MODEL_PROVIDER=bob and BOB_API_KEY, \
+             Set GEMINI_API_KEY, \
              or set GITLENS_MOCK_PROVIDER=1 for testing."
                 .into(),
         )
@@ -74,20 +75,43 @@ impl ModelProvider for StubProvider {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // Load variables from `.env` in this crate's directory (src-tauri/) into
+    // the process environment, before anything below reads
+    // GITLENS_MOCK_PROVIDER, MODEL_PROVIDER, BOB_API_KEY, BOB_PATH, or
+    // GITLENS_CACHE_ROOT.
+    //
+    // We resolve the path via CARGO_MANIFEST_DIR (baked in at compile time as
+    // the absolute path to src-tauri/ on the machine that built this binary)
+    // rather than calling plain `dotenvy::dotenv()`, which instead searches
+    // upward from the process's *current working directory*. That cwd is
+    // src-tauri/ under `cargo tauri dev` — but for an installed/double-clicked
+    // app it can be anywhere (home directory, an app bundle path, etc.), so
+    // the cwd-based search silently finds nothing there. This only works for
+    // binaries run on the same machine (and same source checkout) they were
+    // built on, which matches this app's local-first, locally-built usage.
+    //
+    // A missing .env file is not an error — real environment variables (set
+    // by a shell, CI, or the OS) always take precedence over .env values and
+    // are still honoured with no .env file present at all.
+    let dotenv_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(".env");
+    if let Err(e) = dotenvy::from_path(&dotenv_path) {
+        if !matches!(e, dotenvy::Error::Io(ref io_err) if io_err.kind() == std::io::ErrorKind::NotFound) {
+            eprintln!("[gitlens] Failed to load .env file at {}: {e}", dotenv_path.display());
+        }
+    }
+
     let provider: Arc<dyn ModelProvider> =
         if std::env::var("GITLENS_MOCK_PROVIDER").as_deref() == Ok("1") {
             Arc::new(mock_provider::MockProvider)
-        } else if std::env::var("MODEL_PROVIDER").as_deref() == Ok("bob") {
-            match bob_provider::BobShellProvider::from_env() {
+        } else {
+            match gemini_provider::GeminiProvider::from_env() {
                 Ok(p) => Arc::new(p),
                 Err(e) => {
-                    eprintln!("[gitlens] BobShellProvider init failed: {e}");
+                    eprintln!("[gitlens] GeminiProvider init failed: {e}");
                     eprintln!("[gitlens] Falling back to StubProvider.");
                     Arc::new(StubProvider)
                 }
             }
-        } else {
-            Arc::new(StubProvider)
         };
 
     tauri::Builder::default()

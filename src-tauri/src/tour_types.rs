@@ -101,7 +101,10 @@ impl Default for TourConfig {
     fn default() -> Self {
         Self {
             narration_prompt_version: "v1".into(),
-            model_id: "gemini-1.5-pro".into(),
+            // See the matching comment in significance_ranking_types.rs —
+            // "gemini-flash-latest" tracks Google's current recommended
+            // model rather than a version string that can be retired.
+            model_id: "gemini-flash-latest".into(),
             temperature: 0.3,
             max_narration_tokens: 1024,
             fetch_linked_documents: false,
