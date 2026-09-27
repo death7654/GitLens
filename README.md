@@ -43,6 +43,11 @@
 <img width="282" height="377" alt="image" src="https://github.com/user-attachments/assets/ce01ca83-a0bd-4be0-b0a8-ea97ad20b56c" />
 
 ## Dhanush
+<img width="763" height="251" alt="image" src="https://github.com/user-attachments/assets/d43431a6-f08e-4283-8528-edf280a30a61" />
+<img width="767" height="273" alt="image" src="https://github.com/user-attachments/assets/6d5fec9c-166e-4a13-9ffe-3676bd0815d9" />
+<img width="654" height="238" alt="image" src="https://github.com/user-attachments/assets/a7c9c906-54b5-4539-a90e-ecbe3107e164" />
+<img width="763" height="186" alt="image" src="https://github.com/user-attachments/assets/1731467f-ae18-499c-aa7d-7abf48b06630" />
+
 ---
 ## What it does
 
