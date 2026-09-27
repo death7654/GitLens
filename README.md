@@ -1,4 +1,4 @@
-<img width="721" height="723" alt="image" src="https://github.com/user-attachments/assets/68fc0228-c5b6-4730-8605-c9a928542904" /># GitLens
+# GitLens
 ### A GitLens feature — built by **WireCoffins** for the IBM Bob 2.0 Hackathon
 
 **License:** AGPL-3.0
