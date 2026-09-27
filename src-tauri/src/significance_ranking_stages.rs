@@ -115,6 +115,8 @@ pub async fn summarize_file(
 
 /// Summarises the union of files touched by the candidate set. This is the
 /// only file set that gets summarised — nothing else in the repo is touched.
+///
+/// All non-cached files are summarised concurrently (one provider call each).
 pub async fn summarize_candidate_files(
     repo_path: &Path,
     candidates: &[CandidateInput],
@@ -128,9 +130,19 @@ pub async fn summarize_candidate_files(
     unique.sort();
     unique.dedup();
 
+    let futs: Vec<_> = unique.iter().map(|path| {
+        let path = path.clone();
+        let model_id = model_id.to_string();
+        async move {
+            let result = summarize_file(repo_path, &path, cache_root, provider, &model_id).await;
+            (path, result)
+        }
+    }).collect();
+
+    let results = futures::future::join_all(futs).await;
     let mut out = HashMap::new();
-    for path in unique {
-        match summarize_file(repo_path, &path, cache_root, provider, model_id).await {
+    for (path, result) in results {
+        match result {
             Ok(s) => { out.insert(path, s); }
             Err(e) => eprintln!("[p3] file summary skipped {path}: {e}"),
         }

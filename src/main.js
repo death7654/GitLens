@@ -66,10 +66,13 @@ function log(html, kind = 'info') {
     : kind === 'success' ? 'bi-check-circle log-success'
     : 'bi-circle-fill log-dot';
   el.innerHTML = `<i class="bi ${iconClass}"></i> ${html}`;
-  const log = $('#activity-log');
-  log.prepend(el);
-  // keep at most 60 entries
-  while (log.children.length > 60) log.lastChild.remove();
+  const logEl = $('#activity-log');
+  logEl.prepend(el);
+  // keep at most 60 entries — remove excess in one splice instead of a loop
+  const excess = logEl.children.length - 60;
+  if (excess > 0) {
+    Array.from(logEl.children).slice(-excess).forEach(c => c.remove());
+  }
 }
 
 /** HTML-escape untrusted string. */

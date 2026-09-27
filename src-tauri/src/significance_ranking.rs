@@ -397,22 +397,28 @@ pub async fn run_ranking(
         }
 
         // Stage 2 — per-commit summaries (disk-cached; uses Stage 1 output when
-        // available, degrades to message + file list otherwise).
+        // available, degrades to message + file list otherwise). All commits
+        // are summarised concurrently — cached ones return immediately.
         if cfg.use_commit_summaries {
-            for c in &candidates {
-                match significance_ranking_stages::summarize_commit(
-                    c,
-                    &file_summaries,
-                    cache_root,
-                    provider,
-                    &cfg.model_id,
-                )
-                .await
-                {
-                    Ok(s) => {
-                        commit_summaries.insert(c.commit.hash.clone(), s);
-                    }
-                    Err(e) => eprintln!("[p3] commit summary skipped {}: {e}", c.commit.hash),
+            let futs: Vec<_> = candidates.iter().map(|c| {
+                let hash = c.commit.hash.clone();
+                let model_id = cfg.model_id.clone();
+                async move {
+                    let result = significance_ranking_stages::summarize_commit(
+                        c,
+                        &file_summaries,
+                        cache_root,
+                        provider,
+                        &model_id,
+                    )
+                    .await;
+                    (hash, result)
+                }
+            }).collect();
+            for (hash, result) in futures::future::join_all(futs).await {
+                match result {
+                    Ok(s) => { commit_summaries.insert(hash, s); }
+                    Err(e) => eprintln!("[p3] commit summary skipped {hash}: {e}"),
                 }
             }
         }

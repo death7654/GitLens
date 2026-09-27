@@ -81,15 +81,21 @@ pub fn run_extraction(config: &MiningConfig) -> Result<MiningOutput, String> {
             merged
                 .entry(record.hash.clone())
                 .and_modify(|existing| {
+                    // Use a set to avoid O(n²) dedup when merging subsystems.
+                    let existing_subs: std::collections::HashSet<&str> =
+                        existing.subsystems.iter().map(|s| s.as_str()).collect();
                     for s in &record.subsystems {
-                        if !existing.subsystems.contains(s) {
+                        if !existing_subs.contains(s.as_str()) {
                             existing.subsystems.push(s.clone());
                         }
                     }
                     existing.heuristics = std::mem::take(&mut existing.heuristics)
                         .merge(record.heuristics.clone());
+                    // Use a set to avoid O(n²) dedup when merging files.
+                    let existing_paths: std::collections::HashSet<&str> =
+                        existing.files_changed.iter().map(|f| f.path.as_str()).collect();
                     for f in &record.files_changed {
-                        if !existing.files_changed.iter().any(|ef| ef.path == f.path) {
+                        if !existing_paths.contains(f.path.as_str()) {
                             existing.files_changed.push(f.clone());
                         }
                     }

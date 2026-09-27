@@ -482,4 +482,3 @@ fn main() {
     let stops = build_tour(sample_commits, &EchoStubModel, OrderMode::Chronological, None);
     println!("{}", tour_to_json(&stops, OrderMode::Chronological));
 }
-git 
