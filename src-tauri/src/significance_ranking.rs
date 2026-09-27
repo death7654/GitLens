@@ -400,13 +400,17 @@ pub async fn run_ranking(
         // available, degrades to message + file list otherwise). All commits
         // are summarised concurrently — cached ones return immediately.
         if cfg.use_commit_summaries {
+            // Bind a shared reference before the closure so each `async move`
+            // block captures a `Copy`-able `&HashMap` instead of trying to
+            // move the whole map out on every iteration.
+            let file_summaries_ref = &file_summaries;
             let futs: Vec<_> = candidates.iter().map(|c| {
                 let hash = c.commit.hash.clone();
                 let model_id = cfg.model_id.clone();
                 async move {
                     let result = significance_ranking_stages::summarize_commit(
                         c,
-                        &file_summaries,
+                        file_summaries_ref,
                         cache_root,
                         provider,
                         &model_id,
@@ -487,7 +491,6 @@ pub async fn run_ranking(
         },
     })
 }
-
 // ---------- Tauri IPC command ----------
 
 /// Person 5's frontend calls this after P1's extraction (and P2's enrichment,

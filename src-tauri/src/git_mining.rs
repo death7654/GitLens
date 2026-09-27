@@ -73,37 +73,36 @@ pub fn run_extraction(config: &MiningConfig) -> Result<MiningOutput, String> {
     let mut subsystems_scanned = Vec::new();
     let mut total_scanned = 0usize;
 
-    for res in results {
-        let (subsystem_name, candidates, scanned) = res?;
-        subsystems_scanned.push(subsystem_name);
-        total_scanned += scanned;
-        for record in candidates {
-            merged
-                .entry(record.hash.clone())
-                .and_modify(|existing| {
-                    // Use a set to avoid O(n²) dedup when merging subsystems.
-                    let existing_subs: std::collections::HashSet<&str> =
-                        existing.subsystems.iter().map(|s| s.as_str()).collect();
-                    for s in &record.subsystems {
-                        if !existing_subs.contains(s.as_str()) {
-                            existing.subsystems.push(s.clone());
-                        }
+   for res in results {
+    let (subsystem_name, candidates, scanned) = res?;
+    subsystems_scanned.push(subsystem_name);
+    total_scanned += scanned;
+    for record in candidates {
+        merged
+            .entry(record.hash.clone())
+            .and_modify(|existing| {
+                // Use a set to avoid O(n²) dedup when merging subsystems.
+                let existing_subs: std::collections::HashSet<String> =
+                    existing.subsystems.iter().cloned().collect();
+                for s in &record.subsystems {
+                    if !existing_subs.contains(s) {
+                        existing.subsystems.push(s.clone());
                     }
-                    existing.heuristics = std::mem::take(&mut existing.heuristics)
-                        .merge(record.heuristics.clone());
-                    // Use a set to avoid O(n²) dedup when merging files.
-                    let existing_paths: std::collections::HashSet<&str> =
-                        existing.files_changed.iter().map(|f| f.path.as_str()).collect();
-                    for f in &record.files_changed {
-                        if !existing_paths.contains(f.path.as_str()) {
-                            existing.files_changed.push(f.clone());
-                        }
+                }
+                existing.heuristics = std::mem::take(&mut existing.heuristics)
+                    .merge(record.heuristics.clone());
+                // Use a set to avoid O(n²) dedup when merging files.
+                let existing_paths: std::collections::HashSet<String> =
+                    existing.files_changed.iter().map(|f| f.path.clone()).collect();
+                for f in &record.files_changed {
+                    if !existing_paths.contains(&f.path) {
+                        existing.files_changed.push(f.clone());
                     }
-                })
-                .or_insert(record);
-        }
+                }
+            })
+            .or_insert(record);
     }
-
+}
     let mut commits: Vec<CommitRecord> = merged.into_values().collect();
     commits.sort_by(|a, b| b.timestamp_utc.cmp(&a.timestamp_utc));
 
