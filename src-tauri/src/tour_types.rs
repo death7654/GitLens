@@ -72,6 +72,7 @@ pub struct StopStub {
 /// `<cache_root>/tours/<cache_key>.json`. Individual stop narrations are also
 /// written to `<cache_root>/narrations/<commit_hash>-<prompt_version>.json`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[allow(dead_code)]
 pub struct Tour {
     pub repo_path: String,
     pub head_hash: String,

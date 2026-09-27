@@ -234,6 +234,7 @@ impl ModelProvider for GeminiProvider {
             model_id: req.model_id,
             input_tokens,
             output_tokens,
+            reasoning_text: None,
         })
     }
 }

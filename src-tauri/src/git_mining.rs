@@ -9,8 +9,8 @@
 //!
 //! This logic was developed and validated as a standalone crate (unit tests
 //! + an end-to-end test against a throwaway fixture repo covering every
-//! heuristic) before being wired in here; see the `tests` module at the
-//! bottom of this file for the same coverage running in-tree.
+//!   heuristic) before being wired in here; see the `tests` module at the
+//!   bottom of this file for the same coverage running in-tree.
 
 #[path = "git_mining_types.rs"]
 mod types;
@@ -43,8 +43,10 @@ use std::collections::HashMap;
 /// pre-filtering within each worker, then a merge step that dedupes by
 /// commit hash and unions subsystem tags / heuristic flags for any
 /// cross-cutting commit that more than one worker claimed.
+type SubsystemResult = Result<(String, Vec<CommitRecord>, usize), String>;
+
 pub fn run_extraction(config: &MiningConfig) -> Result<MiningOutput, String> {
-    let results: Vec<Result<(String, Vec<CommitRecord>, usize), String>> =
+    let results: Vec<SubsystemResult> =
         std::thread::scope(|scope| {
             let handles: Vec<_> = config
                 .subsystems

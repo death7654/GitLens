@@ -28,6 +28,12 @@ use crate::provider::{ModelRequest, ModelResponse};
 /// - commit summary → schema `required` contains `"what_changed"`
 /// - prose call     → no schema (project summary subsystem / repo passes)
 pub fn dummy_response(req: &ModelRequest) -> ModelResponse {
+    // Reasoning-pass: no schema + prompt contains the reasoning-instruction marker.
+    // This arm must fire before the generic prose arm so the mock returns a
+    // `reasoning_text`-bearing response for split-mode tests.
+    if req.schema.is_none() && req.user.contains("Reason step by step") {
+        return reasoning_response(req);
+    }
     if schema_requires(req, "candidates") {
         ranking_response(req)
     } else if schema_requires(req, "provides") {
@@ -73,6 +79,7 @@ fn ranking_response(req: &ModelRequest) -> ModelResponse {
         model_id: req.model_id.clone(),
         input_tokens: None,
         output_tokens: None,
+        reasoning_text: None,
     }
 }
 
@@ -95,6 +102,7 @@ fn file_summary_response(req: &ModelRequest) -> ModelResponse {
         model_id: req.model_id.clone(),
         input_tokens: None,
         output_tokens: None,
+        reasoning_text: None,
     }
 }
 
@@ -114,6 +122,7 @@ fn commit_summary_response(req: &ModelRequest) -> ModelResponse {
         model_id: req.model_id.clone(),
         input_tokens: None,
         output_tokens: None,
+        reasoning_text: None,
     }
 }
 
@@ -125,6 +134,24 @@ fn commit_summary_response(req: &ModelRequest) -> ModelResponse {
 /// `.get("field")` access, masking dispatch bugs. Setting it to `None` forces
 /// such callers to fall through to the `serde_json::from_str(&resp.text)` path,
 /// which also returns `None` for a plain prose string — the correct behaviour.
+/// A ranking reasoning-pass response (no schema, prompt contains "Reason step by step").
+///
+/// Returns a canned prose reasoning string with `parsed: None` and a non-empty
+/// `reasoning_text` so downstream consumers see a value from the mock.
+fn reasoning_response(req: &ModelRequest) -> ModelResponse {
+    let text = "[mock reasoning: considered all candidates step by step and identified \
+                the most architecturally significant commits based on their signals]"
+        .to_string();
+    ModelResponse {
+        text: text.clone(),
+        parsed: None,
+        model_id: req.model_id.clone(),
+        input_tokens: None,
+        output_tokens: None,
+        reasoning_text: Some(text),
+    }
+}
+
 fn prose_response(req: &ModelRequest) -> ModelResponse {
     let text = format!(
         "[mock prose for {}]",
@@ -136,6 +163,7 @@ fn prose_response(req: &ModelRequest) -> ModelResponse {
         model_id: req.model_id.clone(),
         input_tokens: None,
         output_tokens: None,
+        reasoning_text: None,
     }
 }
 
@@ -186,6 +214,7 @@ mod tests {
             temperature: 0.0,
             model_id: "test-model".into(),
             max_tokens: None,
+            reasoning: None,
         }
     }
 
@@ -287,5 +316,29 @@ mod tests {
         let prompt = "- hash: abc123\n  subject: fix something\n- hash: def456\n";
         let hashes = extract_hashes_from_prompt(prompt);
         assert_eq!(hashes, vec!["abc123", "def456"]);
+    }
+
+    /// When a reasoning-enabled open-source call is made (no schema, prompt
+    /// contains the reasoning marker), `reasoning_text` must be `Some`.
+    #[test]
+    fn reasoning_pass_returns_reasoning_text() {
+        // This exercises the new `reasoning_response` arm in `dummy_response`.
+        let resp = dummy_response(&req(
+            "Reason step by step about which commits are the most valuable onboarding stops. Do not emit JSON.",
+            "Reason step by step about which commits are the most valuable onboarding stops.",
+            None,
+        ));
+        assert!(
+            resp.reasoning_text.is_some(),
+            "reasoning pass must populate reasoning_text"
+        );
+        assert!(
+            resp.parsed.is_none(),
+            "reasoning pass must have parsed = None"
+        );
+        assert!(
+            !resp.text.is_empty(),
+            "reasoning pass must have non-empty text"
+        );
     }
 }

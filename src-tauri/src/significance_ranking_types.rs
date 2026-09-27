@@ -83,6 +83,14 @@ pub struct RankingMeta {
     /// was `true` when the result was *short* of target_min, i.e. the
     /// opposite of "filled".
     pub below_target_min: bool,
+    /// Free-form reasoning text from the split-reasoning path.
+    ///
+    /// `Some` when `RankingConfig::split_reasoning_from_extraction` was `true`
+    /// and the reasoning call produced text (either from a dedicated reasoning
+    /// field or from `text`).  `None` when the single-call path was used or
+    /// when no reasoning text was produced.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_text: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -105,6 +113,58 @@ pub struct RankingConfig {
     pub discussion_rich_comment_threshold: u32,
     pub use_file_summaries: bool,   // off until P6 wired
     pub use_commit_summaries: bool,
+    /// When `true`, emit reasoning parameters on the ranking call so the
+    /// model uses its chain-of-thought before producing the final answer.
+    /// Controlled by `GITLENS_REASONING_ENABLED` env var.
+    pub reasoning_enabled: bool,
+    /// Maximum tokens to allow for the final answer / extraction pass.
+    /// Controlled by `GITLENS_MAX_OUTPUT_TOKENS` env var.
+    pub max_output_tokens: u32,
+    /// Soft cap on reasoning / thinking tokens.
+    /// Controlled by `GITLENS_MAX_REASONING_TOKENS` env var.
+    pub max_reasoning_tokens: u32,
+    /// Temperature applied during the reasoning pass (not the extraction pass).
+    /// Controlled by `GITLENS_REASONING_TEMPERATURE` env var.
+    pub reasoning_temperature: f32,
+    /// When `true`, `run_ranking` performs the ranking call as two LLM
+    /// round-trips: (a) free-form reasoning, (b) strict-JSON extraction
+    /// conditioned on the reasoning text.  When `false` (default), a single
+    /// structured call is made.
+    ///
+    /// Prefer `true` for local reasoning models (Qwen3, DeepSeek-R1, QwQ)
+    /// where you want the reasoning text surfaced and the JSON extraction kept
+    /// deterministic at temperature 0.  Prefer `false` for cloud models that
+    /// have internal reasoning (OpenAI o-series, Gemini thinking mode).
+    ///
+    /// Controlled by `GITLENS_SPLIT_REASONING_FROM_EXTRACTION` env var.
+    pub split_reasoning_from_extraction: bool,
+}
+
+/// Parse a boolean from an environment variable, logging a warning on
+/// unrecognised values.
+///
+/// Recognises `1` and `true` (case-insensitive) as `true`, `0` and `false`
+/// as `false`.  Empty or unset yields `None` (caller picks the default).
+/// Any other non-empty value is logged and treated as unset, so a typo like
+/// `GITLENS_REASONING_ENABLED=yes` doesn't silently and confusingly fall back
+/// to the default without any diagnostic.
+fn parse_bool_env(name: &str) -> Option<bool> {
+    let raw = std::env::var(name).ok()?;
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    if trimmed == "1" || trimmed.eq_ignore_ascii_case("true") {
+        Some(true)
+    } else if trimmed == "0" || trimmed.eq_ignore_ascii_case("false") {
+        Some(false)
+    } else {
+        eprintln!(
+            "[gitlens] {name}={trimmed:?} is not a recognised boolean \
+             (use '1'/'true' or '0'/'false'). Falling back to default."
+        );
+        None
+    }
 }
 
 impl Default for RankingConfig {
@@ -129,6 +189,126 @@ impl Default for RankingConfig {
             discussion_rich_comment_threshold: 5,
             use_file_summaries: false,
             use_commit_summaries: false,
+            reasoning_enabled: parse_bool_env("GITLENS_REASONING_ENABLED")
+                .unwrap_or(false),
+            max_output_tokens: std::env::var("GITLENS_MAX_OUTPUT_TOKENS")
+                .ok()
+                .and_then(|v| v.trim().parse::<u32>().ok())
+                .unwrap_or(4096),
+            max_reasoning_tokens: std::env::var("GITLENS_MAX_REASONING_TOKENS")
+                .ok()
+                .and_then(|v| v.trim().parse::<u32>().ok())
+                .unwrap_or(2048),
+            reasoning_temperature: std::env::var("GITLENS_REASONING_TEMPERATURE")
+                .ok()
+                .and_then(|v| v.trim().parse::<f32>().ok())
+                .unwrap_or(0.6),
+            split_reasoning_from_extraction: parse_bool_env(
+                "GITLENS_SPLIT_REASONING_FROM_EXTRACTION",
+            )
+            .unwrap_or(false),
+        }
+    }
+}
+
+// ---------- Tests ----------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::env;
+
+    // -- Test 13: env vars are read and hard defaults are restored -----------
+
+    #[test]
+    fn ranking_config_reads_reasoning_env_vars() {
+        // Save and set all five vars.
+        let saved: Vec<(&str, Option<String>)> = vec![
+            "GITLENS_REASONING_ENABLED",
+            "GITLENS_MAX_OUTPUT_TOKENS",
+            "GITLENS_MAX_REASONING_TOKENS",
+            "GITLENS_REASONING_TEMPERATURE",
+            "GITLENS_SPLIT_REASONING_FROM_EXTRACTION",
+        ]
+        .into_iter()
+        .map(|k| (k, env::var(k).ok()))
+        .collect();
+
+        unsafe {
+            env::set_var("GITLENS_REASONING_ENABLED", "true");
+            env::set_var("GITLENS_MAX_OUTPUT_TOKENS", "8192");
+            env::set_var("GITLENS_MAX_REASONING_TOKENS", "4096");
+            env::set_var("GITLENS_REASONING_TEMPERATURE", "0.9");
+            env::set_var("GITLENS_SPLIT_REASONING_FROM_EXTRACTION", "1");
+        }
+
+        let cfg = RankingConfig::default();
+        assert!(cfg.reasoning_enabled, "reasoning_enabled should be true");
+        assert_eq!(cfg.max_output_tokens, 8192);
+        assert_eq!(cfg.max_reasoning_tokens, 4096);
+        assert!((cfg.reasoning_temperature - 0.9).abs() < 1e-5, "temperature should be 0.9");
+        assert!(cfg.split_reasoning_from_extraction);
+
+        // Restore (or remove) saved values.
+        for (k, v) in &saved {
+            match v {
+                Some(val) => unsafe { env::set_var(k, val) },
+                None => unsafe { env::remove_var(k) },
+            }
+        }
+
+        // Now hard defaults should be restored.
+        let cfg2 = RankingConfig::default();
+        assert!(!cfg2.reasoning_enabled, "default reasoning_enabled should be false");
+        assert_eq!(cfg2.max_output_tokens, 4096, "default max_output_tokens = 4096");
+        assert_eq!(cfg2.max_reasoning_tokens, 2048, "default max_reasoning_tokens = 2048");
+        assert!(
+            (cfg2.reasoning_temperature - 0.6).abs() < 1e-5,
+            "default reasoning_temperature = 0.6"
+        );
+        assert!(!cfg2.split_reasoning_from_extraction, "default split = false");
+    }
+
+    // -- Garbage env values fall back to the default (with a warning) --------
+
+    #[test]
+    fn unrecognised_boolean_env_falls_back_to_default() {
+        // Save existing values.
+        let saved_enabled = env::var("GITLENS_REASONING_ENABLED").ok();
+        let saved_split = env::var("GITLENS_SPLIT_REASONING_FROM_EXTRACTION").ok();
+
+        unsafe {
+            env::set_var("GITLENS_REASONING_ENABLED", "yes");
+            env::set_var("GITLENS_SPLIT_REASONING_FROM_EXTRACTION", "on");
+        }
+
+        let cfg = RankingConfig::default();
+        assert!(
+            !cfg.reasoning_enabled,
+            "'yes' is not recognised; must fall back to the default (false)"
+        );
+        assert!(
+            !cfg.split_reasoning_from_extraction,
+            "'on' is not recognised; must fall back to the default (false)"
+        );
+
+        // Explicit false-y values are honoured.
+        unsafe {
+            env::set_var("GITLENS_REASONING_ENABLED", "false");
+            env::set_var("GITLENS_SPLIT_REASONING_FROM_EXTRACTION", "0");
+        }
+        let cfg2 = RankingConfig::default();
+        assert!(!cfg2.reasoning_enabled);
+        assert!(!cfg2.split_reasoning_from_extraction);
+
+        // Restore or remove.
+        match saved_enabled {
+            Some(v) => unsafe { env::set_var("GITLENS_REASONING_ENABLED", v) },
+            None => unsafe { env::remove_var("GITLENS_REASONING_ENABLED") },
+        }
+        match saved_split {
+            Some(v) => unsafe { env::set_var("GITLENS_SPLIT_REASONING_FROM_EXTRACTION", v) },
+            None => unsafe { env::remove_var("GITLENS_SPLIT_REASONING_FROM_EXTRACTION") },
         }
     }
 }

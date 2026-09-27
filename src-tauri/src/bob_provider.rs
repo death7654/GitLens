@@ -27,6 +27,7 @@ use crate::provider::{ModelProvider, ModelRequest, ModelResponse};
 
 /// Concrete [`ModelProvider`] that delegates every call to the `bob` CLI.
 #[derive(Debug)]
+#[allow(dead_code)]
 pub struct BobShellProvider {
     /// Path to the `bob` binary.  Defaults to `"bob"` (PATH lookup).
     bob_path: String,
@@ -34,6 +35,7 @@ pub struct BobShellProvider {
     api_key: String,
 }
 
+#[allow(dead_code)]
 impl BobShellProvider {
     /// Construct from explicit values — mainly useful in tests.
     pub fn new(bob_path: impl Into<String>, api_key: impl Into<String>) -> Self {
@@ -136,6 +138,7 @@ impl ModelProvider for BobShellProvider {
             model_id,
             input_tokens: None,
             output_tokens: None,
+            reasoning_text: None,
         })
     }
 }
@@ -177,6 +180,7 @@ mod tests {
             temperature: 0.0,
             model_id: "m".into(),
             max_tokens: None,
+            reasoning: None,
         };
         let p = BobShellProvider::build_prompt(&req);
         assert!(p.contains("SYSTEM INSTRUCTIONS:"));
@@ -193,6 +197,7 @@ mod tests {
             temperature: 0.0,
             model_id: "m".into(),
             max_tokens: None,
+            reasoning: None,
         };
         let p = BobShellProvider::build_prompt(&req);
         assert!(p.contains("valid JSON"));
@@ -209,6 +214,7 @@ mod tests {
             temperature: 0.0,
             model_id: "m".into(),
             max_tokens: None,
+            reasoning: None,
         };
         let p = BobShellProvider::build_prompt(&req);
         assert!(!p.contains("valid JSON"));
@@ -224,6 +230,7 @@ mod tests {
             temperature: 0.0,
             model_id: "m".into(),
             max_tokens: None,
+            reasoning: None,
         };
         let p = BobShellProvider::build_prompt(&req);
         assert!(!p.contains("SYSTEM INSTRUCTIONS:"));
