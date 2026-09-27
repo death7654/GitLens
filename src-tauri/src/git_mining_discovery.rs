@@ -70,10 +70,8 @@ pub fn discover_subsystems(repo_path: &str) -> Result<Vec<SubsystemDef>, String>
                     path_prefixes: vec![format!("{}/", name)],
                 });
             }
-            Some(ObjectType::Blob) => {
-                if !name.starts_with('.') {
-                    root_files.push(name);
-                }
+            Some(ObjectType::Blob) if !name.starts_with('.') => {
+                root_files.push(name);
             }
             // Submodules (Commit) and symlinks with no further structure to
             // walk here; leave them out rather than guess at a prefix.

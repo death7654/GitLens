@@ -101,6 +101,7 @@ pub async fn summarize_file(
         temperature: 0.0,
         model_id: model_id.to_string(),
         max_tokens: Some(1024),
+        reasoning: None,
     }).await?;
 
     let parsed = resp.parsed
@@ -234,6 +235,7 @@ pub async fn summarize_commit(
         temperature: 0.1,
         model_id: model_id.to_string(),
         max_tokens: Some(768),
+        reasoning: None,
     }).await?;
 
     let parsed = resp.parsed
@@ -325,6 +327,7 @@ pub async fn build_project_summary(
             temperature: 0.0,
             model_id: model_id.to_string(),
             max_tokens: Some(400),
+            reasoning: None,
         }).await?;
         subsystem_summaries.push((top.clone(), resp.text.trim().to_string()));
     }
@@ -344,6 +347,7 @@ pub async fn build_project_summary(
         temperature: 0.2,
         model_id: model_id.to_string(),
         max_tokens: Some(600),
+        reasoning: None,
     }).await?;
 
     let summary = resp.text.trim().to_string();

@@ -178,6 +178,7 @@ impl ModelProvider for MockProvider {
                 model_id: req.model_id,
                 input_tokens: None,
                 output_tokens: None,
+                reasoning_text: None,
             });
         }
 
@@ -207,6 +208,7 @@ mod tests {
             temperature: 0.3,
             model_id: "mock".to_string(),
             max_tokens: Some(512),
+            reasoning: None,
         }
     }
 
@@ -332,6 +334,7 @@ mod tests {
             temperature: 0.1,
             model_id: "mock".to_string(),
             max_tokens: Some(1024),
+            reasoning: None,
         };
         let resp = MockProvider.call(req).await.unwrap();
         let p = resp.parsed.unwrap();
@@ -352,6 +355,7 @@ mod tests {
             temperature: 0.0,
             model_id: "mock".to_string(),
             max_tokens: None,
+            reasoning: None,
         };
         let resp = MockProvider.call(req).await.unwrap();
         let p = resp.parsed.unwrap();
@@ -369,6 +373,7 @@ mod tests {
             temperature: 0.0,
             model_id: "mock".to_string(),
             max_tokens: None,
+            reasoning: None,
         };
         let resp = MockProvider.call(req).await.unwrap();
         assert!(!resp.text.is_empty());

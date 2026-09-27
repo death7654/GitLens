@@ -68,12 +68,10 @@ fn collect_file_changes(diff: &Diff) -> Vec<FileChange> {
         }
         .to_string();
         let (mut additions, mut deletions) = (0usize, 0usize);
-        if let Ok(patch) = git2::Patch::from_diff(diff, idx) {
-            if let Some(patch) = patch {
-                if let Ok((_ctx, adds, dels)) = patch.line_stats() {
-                    additions = adds;
-                    deletions = dels;
-                }
+        if let Ok(Some(patch)) = git2::Patch::from_diff(diff, idx) {
+            if let Ok((_ctx, adds, dels)) = patch.line_stats() {
+                additions = adds;
+                deletions = dels;
             }
         }
         files.push(FileChange {

@@ -43,6 +43,7 @@ fn write_cache<T: Serialize>(p: &Path, v: &T) {
 /// `SHA-256("{repo_path}|{head_hash}|{window_json}|{narration_prompt_version}")`
 ///
 /// Exposed `pub` so Workstream D can assert stability in fixture tests.
+#[allow(dead_code)]
 pub fn tour_cache_key(
     repo_path: &str,
     head_hash: &str,
@@ -373,6 +374,7 @@ pub async fn narrate_stop(
         temperature: cfg.temperature,
         model_id: cfg.model_id.clone(),
         max_tokens: Some(cfg.max_narration_tokens),
+        reasoning: None,
     };
 
     // Exponential backoff retry: up to 3 attempts, delays 1s then 2s.
