@@ -111,13 +111,18 @@ impl Default for RankingConfig {
     fn default() -> Self {
         Self {
             prompt_version: "v1".into(),
-            // "gemini-flash-latest" is a Google-maintained alias that always
-            // points at their current recommended fast/general-purpose
-            // model, so it won't go stale the way a pinned version (e.g. the
-            // now-retired "gemini-1.5-pro") eventually does. Override with
-            // "gemini-pro-latest" for the heavier reasoning tier if needed.
-            model_id: "gemini-flash-latest".into(),
-            temperature: 0.1,
+            // GITLENS_MODEL_ID overrides the default so OpenAI-provider users
+            // can point at e.g. "gpt-4o" without touching the frontend.
+            // Falls back to "gemini-flash-latest" for the Gemini provider.
+            model_id: std::env::var("GITLENS_MODEL_ID")
+                .ok()
+                .filter(|v| !v.trim().is_empty())
+                .unwrap_or_else(|| "gemini-flash-latest".into()),
+            // GITLENS_RANKING_TEMPERATURE overrides the default (0.1).
+            temperature: std::env::var("GITLENS_RANKING_TEMPERATURE")
+                .ok()
+                .and_then(|v| v.trim().parse::<f32>().ok())
+                .unwrap_or(0.1),
             target_min: 10,
             target_max: 15,
             min_per_subsystem: 2,
