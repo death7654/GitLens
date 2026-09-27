@@ -6,6 +6,7 @@
   <meta name="theme-color" content="#111827" />
   <title>GitLens — repository workspace</title>
   <link rel="stylesheet" href="/styles.css" />
+  <link rel="stylesheet" href="/visualizer.css" />
   <script type="module" src="/main.js" defer></script>
 </head>
 <body>
@@ -24,14 +25,91 @@
       <main class="main-content">
         <section class="empty-state" id="welcome"><div class="empty-icon">✦</div><p class="eyebrow">Your local workspace</p><h1>Open a repository<br /><em>to get started.</em></h1><p class="lede">Browse files, inspect source, and keep an eye on changes from one focused workspace.</p><button class="primary-button" id="choose-folder"><span>Choose a folder</span><b>⌘ O</b></button><p class="privacy-note"><span>⌁</span> Files stay on your machine.</p></section>
         <section class="workspace" id="workspace" hidden>
-          <div class="page-heading"><div><p class="eyebrow">Repository overview</p><h1 id="repo-name">Repository</h1><code id="repo-path">/path/to/folder</code></div><div class="repo-actions"><button class="secondary-button" id="change-folder">Change folder</button><button class="pull-button" id="git-pull"><span class="pull-symbol">↓</span> Git pull</button></div></div>
+          <div class="page-heading"><div><p class="eyebrow">Repository overview</p><h1 id="repo-name">Repository</h1><code id="repo-path">/path/to/folder</code></div><div class="repo-actions"><button class="secondary-button" id="change-folder">Change folder</button><button class="pull-button" id="git-pull"><span class="pull-symbol">↓</span> Git pull</button><button class="secondary-button" id="view-tour-btn" hidden>View tour →</button></div></div>
           <div class="repo-stats"><div><span>Current branch</span><strong id="repo-branch">—</strong></div><div><span>Working tree</span><strong id="repo-clean">—</strong></div><div><span>Latest commit</span><strong id="repo-commit">—</strong></div><div><span>Visible items</span><strong id="repo-count">—</strong></div></div>
           <div class="section-heading"><div><h2>Repository files</h2><p>Inspect source directly from your machine.</p></div><button class="ghost-button" id="refresh-view">↻ Refresh</button></div>
           <div class="explorer"><aside class="file-panel"><div class="panel-title"><span>Explorer</span><small id="file-count">0 items</small></div><div class="file-list" id="file-list"></div></aside><section class="preview-panel"><div class="preview-head"><div><span class="file-kind" id="preview-kind">FILE PREVIEW</span><h3 id="preview-name">Select a file</h3></div><span id="preview-size"></span></div><pre id="file-preview"><span class="empty-preview">Choose a file from the explorer to inspect it here.</span></pre></section></div>
           <div class="activity"><div class="activity-title"><span>Recent activity</span><small>session log</small></div><div class="activity-log" id="activity-log"><p><i>•</i> Ready to explore this folder.</p></div></div>
         </section>
+
+        <section class="tour-section" id="tour-section" hidden>
+          <!-- Tour controls header -->
+          <div class="page-heading">
+            <div>
+              <p class="eyebrow">Onboarding tour</p>
+              <h1 id="tour-heading">Repository story</h1>
+            </div>
+            <div class="repo-actions">
+              <button class="ghost-button" id="tour-back-btn">← Back to overview</button>
+            </div>
+          </div>
+
+          <!-- Credentials panel (collapsed by default) -->
+          <details class="credentials-panel" id="credentials-panel">
+            <summary>Document context (optional)</summary>
+            <div class="credentials-grid">
+              <label>GitHub token<input type="password" id="gh-token-input" placeholder="ghp_…" /></label>
+              <label>Repo (owner/repo)<input type="text" id="repo-slug-input" placeholder="e.g. acme/backend-api" /></label>
+              <label>Jira base URL<input type="text" id="jira-url-input" placeholder="https://acme.atlassian.net" /></label>
+              <label>Jira token<input type="password" id="jira-token-input" placeholder="Bearer token" /></label>
+            </div>
+          </details>
+
+          <!-- Generate button (idle state) -->
+          <div id="tour-idle" class="tour-idle-prompt">
+            <p>Ready to generate a guided tour from <strong id="tour-candidate-count">—</strong> ranked candidates.</p>
+            <button class="primary-button" id="generate-tour-btn">Generate tour</button>
+          </div>
+
+          <!-- Fetching docs state -->
+          <div id="tour-fetching" class="tour-state-panel" hidden>
+            <div class="tour-spinner"></div>
+            <p>Gathering incident context…</p>
+          </div>
+
+          <!-- Error state -->
+          <div id="tour-error" class="tour-state-panel" hidden>
+            <p class="tour-error-msg" id="tour-error-msg">Something went wrong.</p>
+            <button class="secondary-button" id="tour-retry-btn">Retry</button>
+          </div>
+
+          <!-- Visualizer panels (Workstream E) — shown as soon as ranking completes -->
+          <div class="vz-arch-section" id="vz-arch-section" hidden>
+            <p class="eyebrow">Before the story begins</p>
+            <h3>Subsystem map</h3>
+            <div id="arch-diagram-container"></div>
+          </div>
+          <div class="vz-graph-section" id="vz-graph-section" hidden>
+            <p class="eyebrow">Commit landscape</p>
+            <h3>History timeline</h3>
+            <div id="commit-graph-container"></div>
+          </div>
+
+          <!-- Stop list (narrating + ready + partial_failure states) -->
+          <div id="tour-stop-list" hidden>
+            <!-- Partial failure banner -->
+            <div id="tour-partial-banner" class="tour-partial-banner" hidden>
+              <span>⚠ Some stops could not be narrated — showing available stops below.</span>
+            </div>
+            <!-- Prev/next nav -->
+            <div class="tour-nav" id="tour-nav">
+              <button class="ghost-button" id="tour-prev-btn" disabled>← Previous</button>
+              <span class="tour-counter" id="tour-counter">Stop 1 of —</span>
+              <button class="ghost-button" id="tour-next-btn" disabled>Next →</button>
+            </div>
+            <!-- Individual stop cards rendered here by JS -->
+            <div id="tour-cards-container"></div>
+            <!-- Export row (Workstream E) -->
+            <div class="vz-export-row" id="vz-export-row" hidden>
+              <button class="ghost-button" id="tour-export-btn">⤓ Export tour</button>
+            </div>
+          </div>
+        </section>
       </main>
     </div>
   </div><div class="toast" id="toast" role="status"></div>
+  <script type="module" src="/commit_graph.js" defer></script>
+  <script type="module" src="/architecture_diagram.js" defer></script>
+  <script type="module" src="/tour_export.js" defer></script>
 </body>
 </html>

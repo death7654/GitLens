@@ -1,0 +1,151 @@
+/* =============================================================================
+   visualizer.css — Workstream E
+   All selectors are prefixed with .vz- or target the specific container IDs
+   owned by Workstream E to avoid collisions with styles.css / Workstream B.
+   ============================================================================= */
+
+/* ---------------------------------------------------------------------------
+   Section wrappers
+   --------------------------------------------------------------------------- */
+
+.vz-arch-section,
+.vz-graph-section {
+  margin-top: 28px;
+  margin-bottom: 4px;
+}
+
+.vz-arch-section h3,
+.vz-graph-section h3 {
+  font-size: 14px;
+  font-weight: 650;
+  color: var(--ink, #1f2328);
+  margin: 0 0 10px;
+  letter-spacing: -.01em;
+}
+
+.vz-arch-section .eyebrow,
+.vz-graph-section .eyebrow {
+  font-size: 10px;
+  font-family: var(--mono, 'SFMono-Regular', Consolas, monospace);
+  text-transform: uppercase;
+  letter-spacing: .1em;
+  color: var(--muted, #57606a);
+  margin: 0 0 4px;
+}
+
+/* ---------------------------------------------------------------------------
+   Commit timeline (#commit-graph-container)
+   --------------------------------------------------------------------------- */
+
+#commit-graph-container {
+  width: 100%;
+  height: 80px;
+  overflow: hidden;        /* belt-and-suspenders: SVG uses viewBox anyway */
+  background: var(--surface, #fff);
+  border: 1px solid var(--line, #e5e7eb);
+  border-radius: 7px;
+  padding: 0 2px;
+}
+
+/* Selected (tour-stop) dot hover highlight */
+.vz-dot-selected:hover {
+  filter: brightness(1.15) drop-shadow(0 0 4px currentColor);
+}
+
+/* ---------------------------------------------------------------------------
+   Architecture diagram (#arch-diagram-container)
+   --------------------------------------------------------------------------- */
+
+#arch-diagram-container {
+  width: 100%;
+  background: var(--surface, #fff);
+  border: 1px solid var(--line, #e5e7eb);
+  border-radius: 7px;
+  padding: 18px 20px;
+  overflow-x: auto;
+}
+
+/* Mermaid injects its SVG directly; let it be responsive */
+#arch-diagram-container .vz-diagram-inner svg {
+  max-width: 100%;
+  height: auto;
+  display: block;
+  margin: 0 auto;
+}
+
+.vz-diagram-label {
+  font-size: 11px;
+  font-family: var(--mono, 'SFMono-Regular', Consolas, monospace);
+  color: var(--muted, #57606a);
+  text-transform: uppercase;
+  letter-spacing: .07em;
+  margin: 0 0 12px;
+}
+
+/* ---------------------------------------------------------------------------
+   Floating tooltip
+   --------------------------------------------------------------------------- */
+
+.vz-tooltip {
+  position: fixed;
+  pointer-events: none;
+  z-index: 100;
+  background: #1f2328;
+  color: #f5f7fa;
+  font-size: 12px;
+  font-family: var(--mono, 'SFMono-Regular', Consolas, monospace);
+  line-height: 1.45;
+  border-radius: 5px;
+  padding: 5px 10px;
+  white-space: nowrap;
+  max-width: 360px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, .18);
+}
+
+/* ---------------------------------------------------------------------------
+   Export row
+   --------------------------------------------------------------------------- */
+
+.vz-export-row {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  padding: 14px 0 4px;
+  border-top: 1px solid var(--line, #e5e7eb);
+  margin-top: 20px;
+}
+
+/* ---------------------------------------------------------------------------
+   Dark / dim mode overrides
+   --------------------------------------------------------------------------- */
+
+body.dim-mode #commit-graph-container,
+body.dim-mode #arch-diagram-container {
+  background: var(--surface, #1a1f2e);
+  border-color: #2d3648;
+}
+
+body.dim-mode .vz-tooltip {
+  background: #f0f3f7;
+  color: #1f2328;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, .35);
+}
+
+body.dim-mode .vz-export-row {
+  border-top-color: #2d3648;
+}
+
+/* ---------------------------------------------------------------------------
+   Responsive
+   --------------------------------------------------------------------------- */
+
+@media (max-width: 520px) {
+  .vz-export-row {
+    justify-content: stretch;
+  }
+  .vz-export-row button {
+    width: 100%;
+  }
+}

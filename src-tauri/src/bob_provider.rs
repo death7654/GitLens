@@ -26,6 +26,7 @@ use tokio::process::Command;
 use crate::provider::{ModelProvider, ModelRequest, ModelResponse};
 
 /// Concrete [`ModelProvider`] that delegates every call to the `bob` CLI.
+#[derive(Debug)]
 pub struct BobShellProvider {
     /// Path to the `bob` binary.  Defaults to `"bob"` (PATH lookup).
     bob_path: String,
@@ -161,11 +162,10 @@ mod tests {
     }
 
     #[test]
-    fn from_env_reads_api_key() {
-        unsafe { env::set_var("BOB_API_KEY", "test-key-value"); }
-        let p = BobShellProvider::from_env().expect("should succeed");
-        unsafe { env::remove_var("BOB_API_KEY"); }
+    fn new_stores_api_key() {
+        let p = BobShellProvider::new("bob", "test-key-value");
         assert_eq!(p.api_key, "test-key-value");
+        assert_eq!(p.bob_path, "bob");
     }
 
     #[test]

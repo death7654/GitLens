@@ -1,5 +1,6 @@
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
 mod bob_provider;
+mod doc_fetch;
 mod git_mining;
 mod mock_provider;
 mod provider;
@@ -7,6 +8,8 @@ mod testing_api;
 mod significance_ranking;
 mod significance_ranking_stages;
 mod significance_ranking_types;
+mod tour_narration;
+mod tour_types;
 
 use provider::ModelProvider;
 use std::sync::Arc;
@@ -66,6 +69,8 @@ pub fn run() {
             git_mining::extract_git_history,
             git_mining::discover_repo_subsystems,
             significance_ranking::rank_significant_commits,
+            tour_narration::fetch_stop_documents,
+            tour_narration::narrate_stop,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

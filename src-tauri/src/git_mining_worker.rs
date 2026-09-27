@@ -30,7 +30,7 @@ pub(crate) struct RawCommit {
 /// parent, or the empty tree for a root commit) without leaking a borrowed
 /// `Diff<'_>` past this call — everything is collected into owned
 /// `FileChange` values before returning.
-fn commit_file_changes(repo: &Repository, commit: &git2::Commit) -> Result<Vec<FileChange>, git2::Error> {
+pub(crate) fn commit_file_changes(repo: &Repository, commit: &git2::Commit) -> Result<Vec<FileChange>, git2::Error> {
     let tree = commit.tree()?;
     let mut opts = DiffOptions::new();
     opts.include_typechange(true);

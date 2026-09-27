@@ -31,6 +31,8 @@ pub use types::{
 };
 #[allow(unused_imports)]
 pub use discovery::discover_subsystems;
+#[allow(unused_imports)]
+pub(crate) use worker::commit_file_changes;
 
 use std::collections::HashMap;
 
@@ -145,6 +147,21 @@ mod tests {
     use super::*;
     use std::process::Command;
 
+    // -----------------------------------------------------------------------
+    // Helpers shared between fixture builders
+    // -----------------------------------------------------------------------
+
+    /// Returns a deterministic ISO-8601 timestamp offset by `minute` minutes
+    /// from a fixed base, so every commit in a pinned-date fixture has a
+    /// unique timestamp and therefore a unique git object hash.
+    fn git_date(minute: u32) -> String {
+        format!("2024-01-15T10:{:02}:00Z", minute)
+    }
+
+    // -----------------------------------------------------------------------
+    // build_fixture_repo — original heuristic coverage fixture (unchanged)
+    // -----------------------------------------------------------------------
+
     /// Builds a throwaway repo with commits deliberately shaped to exercise
     /// every heuristic: a plain feature commit, two fix commits touching the
     /// same file (repeated-fix), a commit referencing an incident ID, and a
@@ -211,6 +228,390 @@ mod tests {
 
         dir
     }
+
+    // -----------------------------------------------------------------------
+    // build_ranking_fixture_repo — ranking / noise-filter fixture
+    // -----------------------------------------------------------------------
+
+    /// Builds a throwaway repo shaped so the ranking pipeline has an
+    /// assertable "right answer":
+    ///
+    /// * 8 noise commits that must be dropped by the heuristic pre-filter or
+    ///   `is_noise_commit`.
+    /// * 3 signal commits that must survive as tour candidates:
+    ///   - Fix A  (repeated-fix pair, first touch of `backend/server.rs`)
+    ///   - Incident (SECURITY-1042 reference, `backend/auth.rs`)
+    ///   - Revert  (reverts the experimental caching layer commit)
+    /// * 1 "bad" commit that gets reverted (also a signal — `was_reverted`)
+    /// * 1 fail-trigger commit: message embeds `MOCK_FAIL_HASH` so that
+    ///   when the narration step builds its prompt, `MockProvider::call`
+    ///   returns `Err` — enabling the partial-failure UI state on camera.
+    ///   This commit has a fix-style subject so it is a candidate that can
+    ///   reach the narration step.
+    ///
+    /// Returns `(temp_dir, expected_signal_hashes)` where
+    /// `expected_signal_hashes` holds the hashes of Fix A, Incident, and
+    /// Revert (commits 9, 11, 13 in the sequence).
+    fn build_ranking_fixture_repo() -> (tempfile::TempDir, Vec<String>) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path();
+
+        // Closure: run a git command with fully pinned author/committer
+        // identity and timestamp.  `minute` is the per-commit offset so
+        // every object hash is unique and stable across machines.
+        let run_at = |args: &[&str], minute: u32| {
+            let date = git_date(minute);
+            let status = Command::new("git")
+                .args(args)
+                .current_dir(path)
+                .env("GIT_AUTHOR_NAME", "Test")
+                .env("GIT_AUTHOR_EMAIL", "test@example.com")
+                .env("GIT_COMMITTER_NAME", "Test")
+                .env("GIT_COMMITTER_EMAIL", "test@example.com")
+                .env("GIT_AUTHOR_DATE", &date)
+                .env("GIT_COMMITTER_DATE", &date)
+                .status()
+                .expect("git command failed to run");
+            assert!(status.success(), "git {:?} failed", args);
+        };
+
+        let write = |rel: &str, content: &str| {
+            let p = path.join(rel);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(p, content).unwrap();
+        };
+
+        let rev_parse = || -> String {
+            let out = Command::new("git")
+                .args(["rev-parse", "HEAD"])
+                .current_dir(path)
+                .output()
+                .unwrap();
+            String::from_utf8_lossy(&out.stdout).trim().to_string()
+        };
+
+        // -- Commit 0: init -------------------------------------------------
+        run_at(&["init", "-q", "-b", "main"], 0);
+
+        // -- Commit 1: initial setup (noise — no heuristic signals) ---------
+        write("frontend/app.js", "console.log('v1');\n");
+        write("backend/server.rs", "fn main() {}\n");
+        write("migrations/001_init.sql", "CREATE TABLE t (id INT);\n");
+        write("Cargo.lock", "# generated\n");
+        run_at(&["add", "."], 1);
+        run_at(&["commit", "-q", "-m", "Initial setup"], 1);
+
+        // -- Commit 2: chore (noise) ----------------------------------------
+        write("backend/server.rs", "fn main() { /* tidy */ }\n");
+        run_at(&["add", "."], 2);
+        run_at(&["commit", "-q", "-m", "chore: tidy imports"], 2);
+
+        // -- Commit 3: style (noise) ----------------------------------------
+        write("frontend/app.js", "console.log('v2');\n");
+        run_at(&["add", "."], 3);
+        run_at(&["commit", "-q", "-m", "style: fix formatting"], 3);
+
+        // -- Commit 4: deps / lockfile-only (noise) -------------------------
+        write("Cargo.lock", "# updated\n");
+        run_at(&["add", "."], 4);
+        run_at(&["commit", "-q", "-m", "deps: bump versions"], 4);
+
+        // -- Commit 5: chore lint config (noise) ----------------------------
+        write(".eslintrc.json", "{}\n");
+        run_at(&["add", "."], 5);
+        run_at(&["commit", "-q", "-m", "chore: update lint config"], 5);
+
+        // -- Commit 6: format (noise) ---------------------------------------
+        write("frontend/app.js", "console.log('v3');\n");
+        run_at(&["add", "."], 6);
+        run_at(&["commit", "-q", "-m", "format: run prettier"], 6);
+
+        // -- Commit 7: chore CI (noise) -------------------------------------
+        write(".github/workflows/ci.yml", "on: push\n");
+        run_at(&["add", "."], 7);
+        run_at(&["commit", "-q", "-m", "chore: CI pipeline update"], 7);
+
+        // -- Commit 8: bump version (noise) ---------------------------------
+        write("backend/server.rs", "fn main() { /* v0.2.0 */ }\n");
+        run_at(&["add", "."], 8);
+        run_at(&["commit", "-q", "-m", "bump version 0.2.0"], 8);
+
+        // -- Commit 9: Fix A (SIGNAL — repeated-fix, first touch) -----------
+        write("backend/server.rs", "fn main() { /* session timeout fix 1 */ }\n");
+        run_at(&["add", "."], 9);
+        run_at(&["commit", "-q", "-m", "Fix session timeout not resetting on activity"], 9);
+        let hash_fix_a = rev_parse();
+
+        // -- Commit 10: Fix B (repeated-fix, second touch — pairs with A) ---
+        write("backend/server.rs", "fn main() { /* session timeout fix 2 */ }\n");
+        run_at(&["add", "."], 10);
+        run_at(&["commit", "-q", "-m", "Fix session timeout regression in middleware"], 10);
+
+        // -- Commit 11: Incident (SIGNAL — SECURITY-1042 ref) ---------------
+        write("backend/auth.rs", "// auth patch\n");
+        run_at(&["add", "."], 11);
+        run_at(&["commit", "-q", "-m", "Patch authentication bypass (SECURITY-1042)"], 11);
+        let hash_incident = rev_parse();
+
+        // -- Commit 12: bad commit (to be reverted) -------------------------
+        write("backend/cache.rs", "// experimental caching layer\n");
+        run_at(&["add", "."], 12);
+        run_at(&["commit", "-q", "-m", "Add experimental caching layer"], 12);
+        let hash_bad = rev_parse();
+
+        // -- Commit 13: Revert of 12 (SIGNAL — is_revert) ------------------
+        // `git revert` creates a new commit; we must also pin its dates.
+        {
+            let date = git_date(13);
+            let status = Command::new("git")
+                .args(["revert", "--no-edit", &hash_bad])
+                .current_dir(path)
+                .env("GIT_AUTHOR_NAME", "Test")
+                .env("GIT_AUTHOR_EMAIL", "test@example.com")
+                .env("GIT_COMMITTER_NAME", "Test")
+                .env("GIT_COMMITTER_EMAIL", "test@example.com")
+                .env("GIT_AUTHOR_DATE", &date)
+                .env("GIT_COMMITTER_DATE", &date)
+                .status()
+                .expect("git revert failed to run");
+            assert!(status.success(), "git revert failed");
+        }
+        let hash_revert = rev_parse();
+
+        // -- Commit 14: fail-trigger (for MockProvider partial-failure demo)
+        //
+        // This commit's message embeds MOCK_FAIL_HASH so that when
+        // `build_narration_prompt` serialises the message_summary into the
+        // prompt, MockProvider::call detects MOCK_FAIL_HASH and returns Err.
+        // The fix-style subject ensures it is a heuristic candidate that can
+        // reach the narration step.
+        #[allow(unused_imports)]
+        use crate::mock_provider::MOCK_FAIL_HASH;
+        write("backend/fail_trigger.rs", "// fail-trigger file\n");
+        run_at(&["add", "."], 14);
+        run_at(
+            &["commit", "-q", "-m", &format!("Fix critical regression (ref: {})", MOCK_FAIL_HASH)],
+            14,
+        );
+
+        let expected = vec![hash_fix_a, hash_incident, hash_revert];
+        (dir, expected)
+    }
+
+    // -----------------------------------------------------------------------
+    // Tests using build_ranking_fixture_repo
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn ranking_post_process_selects_expected_commits() {
+        use crate::significance_ranking::{post_process, ModelScoredCandidate};
+        use crate::significance_ranking_types::{CandidateInput, PrEnrichment, RankingConfig};
+
+        let (dir, expected_hashes) = build_ranking_fixture_repo();
+        let config = MiningConfig {
+            repo_path: dir.path().to_string_lossy().to_string(),
+            subsystems: vec![
+                SubsystemDef {
+                    name: "backend".to_string(),
+                    path_prefixes: vec!["backend/".to_string()],
+                },
+                SubsystemDef {
+                    name: "frontend".to_string(),
+                    path_prefixes: vec!["frontend/".to_string()],
+                },
+                SubsystemDef {
+                    name: "db-schema".to_string(),
+                    path_prefixes: vec!["migrations/".to_string()],
+                },
+            ],
+            window: MiningWindow {
+                max_age_days: None,
+                max_commits_per_subsystem: Some(100),
+            },
+        };
+
+        let output = run_extraction(&config).expect("extraction should succeed");
+
+        // Build CandidateInput for all mined candidates.
+        let candidates: Vec<CandidateInput> = output
+            .commits
+            .iter()
+            .map(|c| CandidateInput {
+                commit: c.clone(),
+                pr: PrEnrichment::default(),
+            })
+            .collect();
+
+        // Simulate ranking: give expected hashes score 0.9, all others 0.1.
+        let scored: Vec<ModelScoredCandidate> = candidates
+            .iter()
+            .map(|c| {
+                let score = if expected_hashes.contains(&c.commit.hash) {
+                    0.9
+                } else {
+                    0.1
+                };
+                ModelScoredCandidate {
+                    commit_hash: c.commit.hash.clone(),
+                    score,
+                    architecture_shaping: false,
+                    rationale: "test".into(),
+                    evidence_summary: "test evidence".into(),
+                }
+            })
+            .collect();
+
+        let (ranked, _shortfall) = post_process(scored, &candidates, &RankingConfig::default());
+
+        for expected_hash in &expected_hashes {
+            assert!(
+                ranked.iter().any(|r| &r.commit_hash == expected_hash),
+                "expected hash {} to be in post_process ranked output",
+                expected_hash
+            );
+        }
+    }
+
+    #[test]
+    fn noise_filter_drops_all_fixture_noise_commits() {
+        use crate::significance_ranking::is_noise_commit;
+        use crate::significance_ranking_types::{CandidateInput, PrEnrichment};
+
+        let (dir, _) = build_ranking_fixture_repo();
+        let config = MiningConfig {
+            repo_path: dir.path().to_string_lossy().to_string(),
+            subsystems: vec![
+                SubsystemDef {
+                    name: "root".to_string(),
+                    path_prefixes: vec![
+                        "Cargo.lock".to_string(),
+                        ".eslintrc.json".to_string(),
+                        ".github/".to_string(),
+                    ],
+                },
+                SubsystemDef {
+                    name: "backend".to_string(),
+                    path_prefixes: vec!["backend/".to_string()],
+                },
+                SubsystemDef {
+                    name: "frontend".to_string(),
+                    path_prefixes: vec!["frontend/".to_string()],
+                },
+            ],
+            window: MiningWindow {
+                max_age_days: None,
+                max_commits_per_subsystem: Some(200),
+            },
+        };
+
+        let output = run_extraction(&config).expect("extraction should succeed");
+
+        // Subjects that must not survive as tour-quality candidates.
+        // Either the heuristic pre-filter drops them (never enter
+        // MiningOutput.commits) or is_noise_commit catches them.
+        let noise_subjects = [
+            "chore: tidy imports",
+            "style: fix formatting",
+            "deps: bump versions",
+            "chore: update lint config",
+            "format: run prettier",
+            "chore: CI pipeline update",
+            "bump version 0.2.0",
+        ];
+
+        for subject in &noise_subjects {
+            let found = output.commits.iter().find(|c| c.message_summary == *subject);
+            if let Some(c) = found {
+                // If a noise commit slipped through the heuristic pre-filter,
+                // is_noise_commit must catch it before ranking.
+                let candidate = CandidateInput {
+                    commit: c.clone(),
+                    pr: PrEnrichment::default(),
+                };
+                assert!(
+                    is_noise_commit(&candidate),
+                    "noise commit '{}' slipped through heuristic filter \
+                     AND is_noise_commit returned false — it would reach ranking",
+                    subject
+                );
+            }
+            // If the commit is absent from output entirely, the heuristic
+            // pre-filter already did its job — that's also correct.
+        }
+    }
+
+    #[test]
+    fn tour_cache_key_changes_on_head_change() {
+        use crate::tour_narration::tour_cache_key;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path();
+
+        let run_at = |args: &[&str], minute: u32| {
+            let date = git_date(minute);
+            let status = Command::new("git")
+                .args(args)
+                .current_dir(path)
+                .env("GIT_AUTHOR_NAME", "Test")
+                .env("GIT_AUTHOR_EMAIL", "test@example.com")
+                .env("GIT_COMMITTER_NAME", "Test")
+                .env("GIT_COMMITTER_EMAIL", "test@example.com")
+                .env("GIT_AUTHOR_DATE", &date)
+                .env("GIT_COMMITTER_DATE", &date)
+                .status()
+                .expect("git command failed to run");
+            assert!(status.success(), "git {:?} failed", args);
+        };
+
+        let write = |rel: &str, content: &str| {
+            let p = path.join(rel);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(p, content).unwrap();
+        };
+
+        let rev_parse = || -> String {
+            let out = Command::new("git")
+                .args(["rev-parse", "HEAD"])
+                .current_dir(path)
+                .output()
+                .unwrap();
+            String::from_utf8_lossy(&out.stdout).trim().to_string()
+        };
+
+        run_at(&["init", "-q", "-b", "main"], 0);
+
+        write("README.md", "v1\n");
+        run_at(&["add", "."], 1);
+        run_at(&["commit", "-q", "-m", "first commit"], 1);
+        let hash1 = rev_parse();
+
+        write("README.md", "v2\n");
+        run_at(&["add", "."], 2);
+        run_at(&["commit", "-q", "-m", "second commit"], 2);
+        let hash2 = rev_parse();
+
+        let window = MiningWindow {
+            max_age_days: Some(365),
+            max_commits_per_subsystem: Some(50),
+        };
+
+        let key1 = tour_cache_key(path.to_str().unwrap(), &hash1, &window, "v1");
+        let key2 = tour_cache_key(path.to_str().unwrap(), &hash2, &window, "v1");
+
+        assert_ne!(key1, key2, "cache key must change when HEAD hash changes");
+
+        // Stability: same inputs → same key.
+        let key1_again = tour_cache_key(path.to_str().unwrap(), &hash1, &window, "v1");
+        assert_eq!(key1, key1_again, "cache key must be stable for identical inputs");
+
+        // Prompt-version change also invalidates the key.
+        let key1_v2 = tour_cache_key(path.to_str().unwrap(), &hash1, &window, "v2");
+        assert_ne!(key1, key1_v2, "cache key must change when prompt version changes");
+    }
+
+    // -----------------------------------------------------------------------
+    // Original heuristic end-to-end test (unchanged)
+    // -----------------------------------------------------------------------
 
     #[test]
     fn end_to_end_mining_flags_expected_heuristics() {
