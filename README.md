@@ -1,5 +1,7 @@
 # Onboarding Ghost
-### A GitLens feature — built for the IBM Bob 2.0 Hackathon
+### A GitLens feature — built by **WireCoffins** for the IBM Bob 2.0 Hackathon
+
+**License:** AGPL-3.0
 
 > New to a codebase? Skip the "spelunk through six years of git blame" phase.
 > Onboarding Ghost mines your repository's history for the commits that
@@ -161,10 +163,37 @@ cargo tauri dev
   that exercises the whole pipeline (including the partial-failure UI path
   via `MOCK_FAIL_HASH`) without needing any API credentials.
 
-## Team
+## Screenshots
 
-- [Your name / team here]
+> _Add a few screenshots below — the Overview stat bar, the extraction
+> wizard, and a narrated tour stop with the commit timeline / subsystem map
+> visible all make good choices._
+
+| | |
+|---|---|
+| ![Overview](screenshots/overview.png) | ![Extraction wizard](screenshots/extraction.png) |
+| ![Tour stop](screenshots/tour-stop.png) | ![Commit timeline](screenshots/commit-timeline.png) |
+
+## Demo video
+
+> _Add your demo video link here (YouTube / Loom / lablab.ai submission
+> video)._
+
+[▶ Watch the demo](https://your-demo-video-link-here)
+
+## Team — WireCoffins
+
+| | |
+|---|---|
+| **Robinson Arysseril** | `robinson_arysseril645` |
+| **Tessa Mariya** | `tess__ah` |
+| **Evan Iwin Biju** | `evan_iwin_biju42` |
+| **Rosmi Reji** | `rosmi_25` |
+| **flaviadaryjoseph** | `flaviadaryjoseph452` |
+| **DHANUSH SUBHASH** | `lblame_dnu` |
+
+Built for the [IBM Bob 2.0 Hackathon](https://lablab.ai/ai-hackathons/ibm-bob-2-hackathon/wire-coffins) on lablab.ai.
 
 ## License
 
-- [License here]
+Licensed under the [GNU Affero General Public License v3.0 (AGPL-3.0)](https://www.gnu.org/licenses/agpl-3.0.html).
