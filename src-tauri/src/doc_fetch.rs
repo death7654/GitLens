@@ -358,7 +358,7 @@ mod tests {
         let root = dir.path();
 
         // Override the cache root via env var so our helpers write to the tempdir.
-        std::env::set_var("GITLENS_CACHE_ROOT", root.to_str().unwrap());
+        unsafe { std::env::set_var("GITLENS_CACHE_ROOT", root.to_str().unwrap()); }
 
         let ref_str = "#999";
         let body = "Test issue body: something interesting happened.";
@@ -371,7 +371,7 @@ mod tests {
         assert_eq!(recovered.as_deref(), Some(body));
 
         // Clean up env var so other tests aren't affected.
-        std::env::remove_var("GITLENS_CACHE_ROOT");
+        unsafe { std::env::remove_var("GITLENS_CACHE_ROOT"); }
     }
 
     #[test]

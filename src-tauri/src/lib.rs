@@ -4,6 +4,7 @@ mod gemini_provider;
 mod git_mining;
 mod mock_provider;
 mod openai_provider;
+mod rate_limiter;
 mod provider;
 mod testing_api;
 mod significance_ranking;
@@ -13,7 +14,7 @@ mod tour_narration;
 mod tour_types;
 
 use provider::ModelProvider;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 #[tauri::command]
 fn greet(name: &str) -> String {
@@ -52,16 +53,22 @@ fn read_repo_file(root: String, relative_path: String) -> Result<String, String>
 
 /// Holds the active `ModelProvider` for the lifetime of the app.
 ///
-/// Provider selection at startup (in priority order):
-///   1. `GITLENS_MOCK_PROVIDER=1`  → `MockProvider`      (test / CI)
-///   2. `MODEL_PROVIDER=openai`    → `OpenAiProvider`    (OpenAI-compatible v1 API)
-///   3. `GEMINI_API_KEY` is set    → `GeminiProvider`    (calls the Gemini API directly)
-///   4. default                    → `StubProvider`      (returns an error on every call)
+/// Unlike the rest of this app's config, the API key is never read from the
+/// environment or a `.env` file — it's entered by the user on the Settings
+/// page and applied at runtime via the `set_api_key` command below, which
+/// swaps out `provider` in place. That's why this is a `Mutex<Arc<...>>`
+/// rather than a bare `Arc<...>`: every Tauri command that needs the
+/// provider (`rank_significant_commits`, `narrate_stop`, …) takes a fresh
+/// clone of the `Arc` from behind the lock at the start of each call, so a
+/// key entered mid-session takes effect on the very next request with no
+/// restart needed.
 ///
-/// The provider is held behind a `Mutex` so it can be swapped at runtime via
-/// the `set_api_key` Tauri command without restarting the app.
+/// Provider selection at startup (in priority order):
+///   1. `GITLENS_MOCK_PROVIDER=1`  → `MockProvider`  (test / CI — no key needed)
+///   2. default                    → `StubProvider`  (returns a clear error
+///      on every call until the user saves a key from Settings)
 pub struct ProviderState {
-    pub provider: Mutex<Arc<dyn ModelProvider>>,
+    pub provider: std::sync::Mutex<Arc<dyn ModelProvider>>,
 }
 
 struct StubProvider;
@@ -71,49 +78,49 @@ impl ModelProvider for StubProvider {
     async fn call(&self, _req: provider::ModelRequest) -> Result<provider::ModelResponse, String> {
         Err(
             "No model provider is configured. \
-             Set MODEL_PROVIDER=openai (and optionally OPENAI_BASE_URL / OPENAI_API_KEY), \
-             set GEMINI_API_KEY, \
+             Open Settings and save an API key for Gemini or OpenAI, \
              or set GITLENS_MOCK_PROVIDER=1 for testing."
                 .into(),
         )
     }
 }
 
-/// Replace the active model provider at runtime.
+/// Backs the Settings page's "Save & apply" button
+/// (`invoke('set_api_key', { providerName, apiKey, baseUrl })` in `main.js`).
 ///
-/// `provider_name` must be one of `"gemini"`, `"openai"`, or `"openai_compatible"`.
-/// `api_key` is used as the bearer token for the chosen provider.
-/// An optional `base_url` may be supplied for OpenAI-compatible servers;
-/// it defaults to `http://localhost:11434/v1` (Ollama) when absent.
-///
-/// Returns `Ok(())` on success, or an `Err` string describing what went wrong.
+/// Swaps the app's active `ModelProvider` in place — every subsequent
+/// ranking/summary/narration call picks up the new provider immediately,
+/// no restart required. `base_url` is only used by the `"openai"` provider
+/// today (the Settings UI only shows that field for that choice); Gemini
+/// still allows an override via the `GEMINI_BASE_URL` env var for advanced
+/// use (a proxy or regional endpoint), but not from this command.
 #[tauri::command]
 fn set_api_key(
     provider_name: String,
     api_key: String,
     base_url: Option<String>,
-    state: tauri::State<'_, ProviderState>,
+    provider_state: tauri::State<'_, ProviderState>,
 ) -> Result<(), String> {
-    if api_key.trim().is_empty() {
-        return Err("API key must not be empty.".into());
+    let api_key = api_key.trim().to_string();
+    if api_key.is_empty() {
+        return Err("API key cannot be empty.".into());
     }
 
-    let new_provider: Arc<dyn ModelProvider> = match provider_name.to_lowercase().as_str() {
-        "gemini" => Arc::new(gemini_provider::GeminiProvider::new(api_key.trim())),
-        "openai" | "openai_compatible" => {
-            let url = base_url
-                .filter(|u| !u.trim().is_empty())
-                .unwrap_or_else(|| "http://localhost:11434/v1".to_string());
-            Arc::new(openai_provider::OpenAiProvider::new(
-                Some(api_key.trim()),
-                url,
+    let new_provider: Arc<dyn ModelProvider> = match provider_name.as_str() {
+        "gemini" => Arc::new(gemini_provider::GeminiProvider::new(api_key)),
+        "openai" => Arc::new(openai_provider::OpenAiProvider::with_base_url(api_key, base_url)),
+        other => {
+            return Err(format!(
+                "Unknown provider '{other}'. Expected 'gemini' or 'openai'."
             ))
         }
-        other => return Err(format!("Unknown provider '{other}'. Use 'gemini' or 'openai'.")),
     };
 
-    *state.provider.lock().map_err(|_| "Provider lock poisoned".to_string())? = new_provider;
-    eprintln!("[gitlens] Provider swapped to '{provider_name}' via set_api_key.");
+    let mut guard = provider_state
+        .provider
+        .lock()
+        .map_err(|e| format!("provider lock was poisoned: {e}"))?;
+    *guard = new_provider;
     Ok(())
 }
 
@@ -121,8 +128,9 @@ fn set_api_key(
 pub fn run() {
     // Load variables from `.env` in this crate's directory (src-tauri/) into
     // the process environment, before anything below reads
-    // GITLENS_MOCK_PROVIDER, MODEL_PROVIDER, BOB_API_KEY, BOB_PATH, or
-    // GITLENS_CACHE_ROOT.
+    // GITLENS_MOCK_PROVIDER, GEMINI_MAX_*, OPENAI_MAX_*, or GITLENS_CACHE_ROOT.
+    // Note: API keys are NOT among these — they're entered on the Settings
+    // page at runtime (see `set_api_key` below), not read from `.env`.
     //
     // We resolve the path via CARGO_MANIFEST_DIR (baked in at compile time as
     // the absolute path to src-tauri/ on the machine that built this binary)
@@ -144,28 +152,21 @@ pub fn run() {
         }
     }
 
+    // No API key is ever read from the environment at startup — the user
+    // supplies one from the Settings page once the app is running (see
+    // `set_api_key`). Until then, every model call fails with a clear
+    // "open Settings" message from StubProvider rather than a silent no-op.
     let provider: Arc<dyn ModelProvider> =
         if std::env::var("GITLENS_MOCK_PROVIDER").as_deref() == Ok("1") {
             Arc::new(mock_provider::MockProvider)
-        } else if std::env::var("MODEL_PROVIDER").as_deref() == Ok("openai") {
-            let p = openai_provider::OpenAiProvider::from_env();
-            eprintln!("[gitlens] Using OpenAiProvider (base_url: {})", p.base_url());
-            Arc::new(p)
         } else {
-            match gemini_provider::GeminiProvider::from_env() {
-                Ok(p) => Arc::new(p),
-                Err(e) => {
-                    eprintln!("[gitlens] GeminiProvider init failed: {e}");
-                    eprintln!("[gitlens] Falling back to StubProvider.");
-                    Arc::new(StubProvider)
-                }
-            }
+            Arc::new(StubProvider)
         };
 
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
-        .manage(ProviderState { provider: Mutex::new(provider) })
+        .manage(ProviderState { provider: std::sync::Mutex::new(provider) })
         .invoke_handler(tauri::generate_handler![
             greet,
             read_repo_file,

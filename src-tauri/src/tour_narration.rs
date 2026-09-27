@@ -43,7 +43,6 @@ fn write_cache<T: Serialize>(p: &Path, v: &T) {
 /// `SHA-256("{repo_path}|{head_hash}|{window_json}|{narration_prompt_version}")`
 ///
 /// Exposed `pub` so Workstream D can assert stability in fixture tests.
-#[allow(dead_code)]
 pub fn tour_cache_key(
     repo_path: &str,
     head_hash: &str,
@@ -303,6 +302,28 @@ fn fetch_diff_excerpt_blocking(repo_path: &str, commit_hash: &str) -> Result<Str
     Ok(out)
 }
 
+/// Strip a leading/trailing markdown code fence (```` ```json ... ``` ````
+/// or plain ```` ``` ... ``` ````) that some providers wrap their JSON in
+/// despite being told not to (notably `OpenAiProvider` and
+/// `BobShellProvider`, which have no schema-enforced structured output).
+/// Returns the input unchanged if no fence is present.
+fn strip_json_fence(text: &str) -> &str {
+    let trimmed = text.trim();
+    let Some(after_open) = trimmed.strip_prefix("```") else {
+        return trimmed;
+    };
+    // Skip an optional language tag on the opening fence line (e.g. "json").
+    let after_open = after_open
+        .strip_prefix("json")
+        .or_else(|| after_open.strip_prefix("JSON"))
+        .unwrap_or(after_open);
+    let after_open = after_open.trim_start_matches(['\r', '\n']);
+    match after_open.rfind("```") {
+        Some(close_idx) => after_open[..close_idx].trim(),
+        None => after_open.trim(),
+    }
+}
+
 /// Parse the narration response JSON into (title, narration) strings.
 fn parse_narration_response(
     resp_parsed: Option<serde_json::Value>,
@@ -310,6 +331,7 @@ fn parse_narration_response(
 ) -> Result<(String, String), String> {
     let v = resp_parsed
         .or_else(|| serde_json::from_str(resp_text).ok())
+        .or_else(|| serde_json::from_str(strip_json_fence(resp_text)).ok())
         .ok_or_else(|| "narration response was not parseable JSON".to_string())?;
 
     let title = v
@@ -378,9 +400,10 @@ pub async fn narrate_stop(
     };
 
     // Exponential backoff retry: up to 3 attempts, delays 1s then 2s.
-    let provider = provider_state.provider
+    let provider = provider_state
+        .provider
         .lock()
-        .map_err(|_| "Provider lock poisoned".to_string())?
+        .map_err(|e| format!("provider lock was poisoned: {e}"))?
         .clone();
     let mut last_err = String::new();
     let retry_delays_ms: &[u64] = &[0, 1000, 2000];
@@ -392,25 +415,43 @@ pub async fn narrate_stop(
 
         match provider.call(req.clone()).await {
             Ok(resp) => {
-                let (title, narration) = parse_narration_response(resp.parsed, &resp.text)?;
+                // Parse failures must fall through to the next retry attempt
+                // rather than bailing out of the whole function on attempt 1:
+                // an early-return `?` here would silently skip the remaining
+                // retries any time the model's response came back as `Ok`
+                // from the provider but wasn't valid JSON (e.g. wrapped in a
+                // markdown fence, truncated by max_tokens, or stray prose).
+                match parse_narration_response(resp.parsed, &resp.text) {
+                    Ok((title, narration)) => {
+                        let stop = TourStop {
+                            sequence: stub.sequence,
+                            commit_hash: stub.commit_hash.clone(),
+                            timestamp_utc: stub.timestamp_utc.clone(),
+                            title,
+                            narration,
+                            subsystem: stub.subsystem.clone(),
+                            subsystems: stub.subsystems.clone(),
+                            files_changed: stub.files_changed.clone(),
+                            triggered_by: stub.triggered_by.clone(),
+                            selection_rationale: stub.selection_rationale.clone(),
+                            linked_document: stub.linked_document.clone(),
+                        };
 
-                let stop = TourStop {
-                    sequence: stub.sequence,
-                    commit_hash: stub.commit_hash.clone(),
-                    timestamp_utc: stub.timestamp_utc.clone(),
-                    title,
-                    narration,
-                    subsystem: stub.subsystem.clone(),
-                    subsystems: stub.subsystems.clone(),
-                    files_changed: stub.files_changed.clone(),
-                    triggered_by: stub.triggered_by.clone(),
-                    selection_rationale: stub.selection_rationale.clone(),
-                    linked_document: stub.linked_document.clone(),
-                };
-
-                // Write per-stop cache.
-                write_cache(&stop_cache_path, &stop);
-                return Ok(stop);
+                        // Write per-stop cache.
+                        write_cache(&stop_cache_path, &stop);
+                        return Ok(stop);
+                    }
+                    Err(e) => {
+                        last_err = e;
+                        eprintln!(
+                            "[tour_narration] narrate_stop attempt {}/{} produced unparseable JSON for {}: {}",
+                            attempt + 1,
+                            retry_delays_ms.len(),
+                            stub.commit_hash,
+                            last_err
+                        );
+                    }
+                }
             }
             Err(e) => {
                 last_err = e;
@@ -673,5 +714,48 @@ mod tests {
         let text = r#"{"title":"Fallback title","narration":"Fallback narration."}"#;
         let (title, _) = parse_narration_response(None, text).unwrap();
         assert_eq!(title, "Fallback title");
+    }
+
+    // --- strip_json_fence ---
+
+    #[test]
+    fn test_strip_json_fence_with_json_language_tag() {
+        let text = "```json\n{\"title\":\"T\",\"narration\":\"N\"}\n```";
+        assert_eq!(strip_json_fence(text), r#"{"title":"T","narration":"N"}"#);
+    }
+
+    #[test]
+    fn test_strip_json_fence_plain_fence_no_language_tag() {
+        let text = "```\n{\"title\":\"T\",\"narration\":\"N\"}\n```";
+        assert_eq!(strip_json_fence(text), r#"{"title":"T","narration":"N"}"#);
+    }
+
+    #[test]
+    fn test_strip_json_fence_leaves_unfenced_text_unchanged() {
+        let text = r#"{"title":"T","narration":"N"}"#;
+        assert_eq!(strip_json_fence(text), text);
+    }
+
+    #[test]
+    fn test_parse_narration_response_recovers_from_fenced_json() {
+        // Simulates an OpenAI-compatible / Bob-shell provider that wrapped
+        // its JSON in a markdown fence despite being told not to: `parsed`
+        // is None (it failed the provider's own strict parse) and `text`
+        // is fenced, so the raw serde_json::from_str fallback would fail
+        // but the fence-stripping fallback must recover it.
+        let text = "```json\n{\"title\":\"Fenced title\",\"narration\":\"Fenced narration.\"}\n```";
+        let (title, narration) = parse_narration_response(None, text).unwrap();
+        assert_eq!(title, "Fenced title");
+        assert_eq!(narration, "Fenced narration.");
+    }
+
+    #[test]
+    fn test_parse_narration_response_still_errors_on_garbage() {
+        let result = parse_narration_response(None, "not json at all, sorry!");
+        assert!(result.is_err());
+        assert_eq!(
+            result.unwrap_err(),
+            "narration response was not parseable JSON"
+        );
     }
 }

@@ -8,35 +8,6 @@
 //!   4. Ranking ★             — map per-candidate → reduce to top N
 //!   5. Post-process          — validate → noise → diversity → refill
 //!   6. Emit                  — RankingOutput
-//!
-//! # Ranking call modes
-//!
-//! Stage 4 can operate in one of two modes, selected by
-//! `RankingConfig::split_reasoning_from_extraction`:
-//!
-//! **Single-call mode** (`split_reasoning_from_extraction = false`, default):
-//! One structured call with `response_format: json_object`.  This is the
-//! correct choice for cloud models that perform internal chain-of-thought
-//! natively (OpenAI o-series with `reasoning_effort`, Gemini Flash with
-//! thinking mode, etc.).  The model scores all candidates and returns JSON
-//! in a single round-trip.  Reasoning config (if any) is passed in the same
-//! call so the model may use it before emitting the answer.
-//!
-//! **Split mode** (`split_reasoning_from_extraction = true`):
-//! Two round-trips: (a) a free-form reasoning call with no JSON schema, then
-//! (b) a deterministic JSON-extraction call conditioned on the reasoning text.
-//! Prefer this for local open-source reasoning models (Qwen3, DeepSeek-R1,
-//! QwQ) where you want the chain-of-thought surfaced in
-//! `RankingOutput.meta.reasoning_text` and the JSON extraction pinned to
-//! temperature 0 for reproducibility.  The extraction call disables reasoning
-//! so it does not re-reason; it merely formats the conclusion.
-//!
-//! Note that the *extraction* pass in split mode still receives the full
-//! ranking prompt including the JSON-instructions paragraph.  Stripping that
-//! paragraph is what makes the reasoning pass open-ended — but the extraction
-//! pass would have no way of knowing which fields to emit without it, since
-//! the OpenAI-compatible wire protocol carries `response_format:
-//! json_object` (a JSON-mode flag) and not a schema description.
 
 use regex::Regex;
 use std::cmp::Ordering;
@@ -44,7 +15,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::OnceLock;
 
 use crate::git_mining::SubsystemDef;
-use crate::provider::{ModelProvider, ModelRequest, ModelResponse, ReasoningConfig, ReasoningKind};
+use crate::provider::{ModelProvider, ModelRequest};
 use crate::significance_ranking_stages;
 use crate::significance_ranking_types::*;
 
@@ -252,19 +223,11 @@ pub struct ModelScoredCandidate {
 /// natural-language synthesis to reason over. Empty map is fine: the prompt
 /// degrades to just the raw signal block, which is what Stage 4 saw before
 /// Stage 2 existed.
-///
-/// When `json_instructions` is `true` (single-call mode, and the extraction
-/// pass of split mode), the prompt includes the "Return JSON: …" paragraph
-/// that tells the model the exact schema fields to emit.  When `false` (the
-/// reasoning pass of split mode), that paragraph is omitted so the model
-/// produces free-form reasoning without being prematurely constrained to
-/// JSON output.
 pub fn build_ranking_prompt(
     candidates: &[CandidateInput],
     commit_summaries: &HashMap<String, crate::significance_ranking_stages::CommitSummary>,
     project_summary: &str,
     target_max: usize,
-    json_instructions: bool,
 ) -> String {
     // Per-field cap so a single verbose summary can't blow the context budget
     // when the candidate set is large. Tune against the demo repo.
@@ -291,18 +254,13 @@ pub fn build_ranking_prompt(
          - Revert / revert chain (tried and undone — high narrative value)\n\
          - Incident-linked fix (references a bug, outage, or incident)\n\
          - Discussion richness (gnarly PR review, many comments)\n\
-         Downweight: dependency bumps, formatting passes, lockfile-only commits.\n",
+         Downweight: dependency bumps, formatting passes, lockfile-only commits.\n\n\
+         Return JSON: {\"candidates\":[{\"commit_hash\",\"score\"(0..1),\
+         \"architecture_shaping\"(bool),\"rationale\",\"evidence_summary\"}]}\n\
+         Return at most ",
     );
-    if json_instructions {
-        out.push_str(
-            "\nReturn JSON: {\"candidates\":[{\"commit_hash\",\"score\"(0..1),\
-             \"architecture_shaping\"(bool),\"rationale\",\"evidence_summary\"}]}\n\
-             Return at most ",
-        );
-        out.push_str(&target_max.to_string());
-        out.push_str(" entries, highest first.\n");
-    }
-    out.push_str("\nCANDIDATES:\n");
+    out.push_str(&target_max.to_string());
+    out.push_str(" entries, highest first.\n\nCANDIDATES:\n");
 
     for c in candidates {
         let h = &c.commit.heuristics;
@@ -406,137 +364,6 @@ fn parse_ranking_response(v: &serde_json::Value) -> Result<Vec<ModelScoredCandid
     Ok(out)
 }
 
-// ---------- Stage 4 call helper ----------
-
-/// Execute the ranking LLM call in either single-call or split mode.
-///
-/// Returns `(response_with_json, Option<reasoning_text>)`.
-///
-/// Two prompt variants are passed in so each pass gets exactly the prompt it
-/// needs:
-///
-/// - `prompt_with_json` — the full prompt including the `Return JSON: …`
-///   paragraph.  Used for the single structured call, and for the extraction
-///   pass in split mode (the extraction model needs to know the schema fields
-///   since the OpenAI wire format only carries a `json_object` flag, not a
-///   schema description).
-/// - `prompt_without_json` — the same rubric with the JSON-instructions
-///   paragraph stripped out.  Used only for the reasoning pass in split mode,
-///   so the model is free to reason in prose without being constrained to
-///   emit JSON prematurely.
-///
-/// In **single-call mode** (`cfg.split_reasoning_from_extraction == false`):
-/// one call is made with `prompt_with_json` and a JSON schema.  The returned
-/// `Option<String>` carries `response.reasoning_text` if the backend returned
-/// separate reasoning.
-///
-/// In **split mode** (`cfg.split_reasoning_from_extraction == true`):
-/// 1. A reasoning call (no schema) using `prompt_without_json`.
-/// 2. An extraction call (JSON schema, temperature 0, reasoning disabled)
-///    using `prompt_with_json`, with the reasoning output prepended as
-///    context.
-///
-/// The `Option<String>` in the return value is always the reasoning text (if
-/// any), and the `ModelResponse` is always the JSON-carrying response that
-/// downstream `parse_ranking_response` should consume.
-async fn call_ranking_stage(
-    provider: &dyn ModelProvider,
-    prompt_with_json: String,
-    prompt_without_json: String,
-    cfg: &RankingConfig,
-) -> Result<(ModelResponse, Option<String>), String> {
-    if cfg.split_reasoning_from_extraction {
-        // ── Step 1: free-form reasoning pass ───────────────────────────────
-        // Uses the JSON-free prompt variant so the model doesn't prematurely
-        // constrain itself to JSON format.
-        let reasoning_resp = provider
-            .call(ModelRequest {
-                system: "Reason step by step about which commits are the most valuable \
-                         onboarding stops. Do not emit JSON."
-                    .into(),
-                user: prompt_without_json,
-                schema: None,
-                temperature: cfg.reasoning_temperature,
-                model_id: cfg.model_id.clone(),
-                max_tokens: Some(cfg.max_reasoning_tokens),
-                reasoning: Some(ReasoningConfig {
-                    enabled: Some(true),
-                    max_reasoning_tokens: Some(cfg.max_reasoning_tokens),
-                    temperature: Some(cfg.reasoning_temperature),
-                    kind: ReasoningKind::Auto,
-                }),
-            })
-            .await?;
-
-        // Prefer dedicated reasoning_text (when backend returns it separately),
-        // otherwise use the full text output.
-        let reasoning_text = reasoning_resp
-            .reasoning_text
-            .clone()
-            .filter(|s| !s.is_empty())
-            .or_else(|| {
-                if reasoning_resp.text.is_empty() {
-                    None
-                } else {
-                    Some(reasoning_resp.text.clone())
-                }
-            });
-
-        // ── Step 2: extraction pass ─────────────────────────────────────────
-        // Uses the JSON-instructed prompt variant so the model knows the
-        // required fields; the reasoning output is prepended as context.
-        // Schema-constrained, temperature 0, reasoning disabled so the model
-        // just formats rather than re-reasons.
-        let extraction_user = if let Some(ref rt) = reasoning_text {
-            format!("REASONING:\n{rt}\n\n{prompt_with_json}")
-        } else {
-            prompt_with_json
-        };
-
-        let extraction_resp = provider
-            .call(ModelRequest {
-                system: "You are a JSON extraction engine. Given the analysis below, \
-                         emit only JSON matching the schema."
-                    .into(),
-                user: extraction_user,
-                schema: Some(ranking_response_schema()),
-                temperature: 0.0,
-                model_id: cfg.model_id.clone(),
-                max_tokens: Some(cfg.max_output_tokens),
-                reasoning: Some(ReasoningConfig {
-                    enabled: Some(false),
-                    ..Default::default()
-                }),
-            })
-            .await?;
-
-        Ok((extraction_resp, reasoning_text))
-    } else {
-        // ── Single-call mode ────────────────────────────────────────────────
-        let reasoning_cfg = ReasoningConfig {
-            enabled: Some(cfg.reasoning_enabled),
-            max_reasoning_tokens: Some(cfg.max_reasoning_tokens),
-            temperature: Some(cfg.reasoning_temperature),
-            kind: ReasoningKind::Auto,
-        };
-
-        let resp = provider
-            .call(ModelRequest {
-                system: "You rank git commits for onboarding tours. Return strict JSON.".into(),
-                user: prompt_with_json,
-                schema: Some(ranking_response_schema()),
-                temperature: cfg.temperature,
-                model_id: cfg.model_id.clone(),
-                max_tokens: Some(cfg.max_output_tokens),
-                reasoning: Some(reasoning_cfg),
-            })
-            .await?;
-
-        let rt = resp.reasoning_text.clone();
-        Ok((resp, rt))
-    }
-}
-
 // ---------- Orchestrator ----------
 
 pub async fn run_ranking(
@@ -613,33 +440,23 @@ pub async fn run_ranking(
     }
 
     // ---- Stage 4 — the ranking call (the actual deliverable) ----
-    //
-    // Build two prompt variants so each pass in split mode receives the right
-    // one: the reasoning pass needs the JSON-free rubric, while the extraction
-    // pass (and the single-call mode) needs the JSON-instructions paragraph
-    // that names the required schema fields.  In single-call mode the second
-    // variant is simply cloned — no extra work beyond a String clone.
-    let prompt_with_json = build_ranking_prompt(
+    let prompt = build_ranking_prompt(
         &candidates,
         &commit_summaries,
         &project_summary,
         cfg.target_max,
-        true,
     );
-    let prompt_without_json = if cfg.split_reasoning_from_extraction {
-        build_ranking_prompt(
-            &candidates,
-            &commit_summaries,
-            &project_summary,
-            cfg.target_max,
-            false,
-        )
-    } else {
-        prompt_with_json.clone()
-    };
-
-    let (resp, reasoning_text) =
-        call_ranking_stage(provider, prompt_with_json, prompt_without_json, &cfg).await?;
+    let resp = provider
+        .call(ModelRequest {
+            system: "You rank git commits for onboarding tours. Return strict JSON.".into(),
+            user: prompt,
+            schema: Some(ranking_response_schema()),
+            temperature: cfg.temperature,
+            model_id: cfg.model_id.clone(),
+            max_tokens: Some(4096),
+            reasoning: None,
+        })
+        .await?;
 
     let parsed = resp
         .parsed
@@ -660,7 +477,7 @@ pub async fn run_ranking(
             generated_at_utc: chrono::Utc::now().to_rfc3339(),
             candidate_count: candidates.len(),
             below_target_min,
-            reasoning_text,
+            reasoning_text: None,
         },
     })
 }
@@ -685,9 +502,10 @@ pub async fn rank_significant_commits(
     provider_state: tauri::State<'_, crate::ProviderState>,
 ) -> Result<RankingOutput, String> {
     let cfg = cfg.unwrap_or_default();
-    let provider = provider_state.provider
+    let provider = provider_state
+        .provider
         .lock()
-        .map_err(|_| "Provider lock poisoned".to_string())?
+        .map_err(|e| format!("provider lock was poisoned: {e}"))?
         .clone();
     run_ranking(
         candidates,
@@ -706,9 +524,6 @@ pub async fn rank_significant_commits(
 mod tests {
     use super::*;
     use crate::git_mining::{CommitRecord, FileChange, HeuristicFlags};
-    use crate::mock_provider::MockProvider;
-    use crate::provider::ModelProvider;
-    use std::sync::{Arc, Mutex};
 
     fn mk(hash: &str, subject: &str, subsystems: &[&str], files: &[&str]) -> CandidateInput {
         CandidateInput {
@@ -744,8 +559,6 @@ mod tests {
             evidence_summary: String::new(),
         }
     }
-
-    // -- original post_process tests -----------------------------------------
 
     #[test]
     fn noise_filter_drops_lockfile_only_commits() {
@@ -808,7 +621,9 @@ mod tests {
         // All three candidates are noise-flagged ("chore:" messages). The
         // non-noise pool is empty, so the only way to reach target_min=2 is
         // to re-admit noise by score.
-        let cfg = RankingConfig { target_min: 2, target_max: 15, ..RankingConfig::default() };
+        let mut cfg = RankingConfig::default();
+        cfg.target_min = 2;
+        cfg.target_max = 15;
 
         let cands = vec![
             mk("n1", "chore: tidy", &["backend"], &["src/a.rs"]),
@@ -833,7 +648,9 @@ mod tests {
         // Only two non-noise candidates exist in the pool, but target_min is
         // five. Refill has nothing left to admit; the flag should report the
         // shortfall.
-        let cfg = RankingConfig { target_min: 5, target_max: 15, ..RankingConfig::default() };
+        let mut cfg = RankingConfig::default();
+        cfg.target_min = 5;
+        cfg.target_max = 15;
 
         let cands = vec![
             mk("a", "Fix race in scheduler", &["backend"], &["src/a.rs"]),
@@ -846,241 +663,6 @@ mod tests {
         assert!(
             below,
             "2 < target_min=5 should report below_target_min"
-        );
-    }
-
-    // ---------- recording provider for call-count tests ----------
-
-    /// A `ModelProvider` that records every request and delegates to `MockProvider`.
-    struct RecordingProvider {
-        calls: Arc<Mutex<Vec<ModelRequest>>>,
-    }
-
-    impl RecordingProvider {
-        fn new() -> Self {
-            Self {
-                calls: Arc::new(Mutex::new(Vec::new())),
-            }
-        }
-    }
-
-    #[async_trait::async_trait]
-    impl ModelProvider for RecordingProvider {
-        async fn call(&self, req: ModelRequest) -> Result<ModelResponse, String> {
-            self.calls.lock().unwrap().push(req.clone());
-            MockProvider.call(req).await
-        }
-    }
-
-    fn make_candidates(n: usize) -> Vec<CandidateInput> {
-        (0..n)
-            .map(|i| mk(&format!("hash{i:02}"), "fix something real", &["backend"], &["src/a.rs"]))
-            .collect()
-    }
-
-    // -- Test 9: split mode makes exactly two calls --------------------------
-
-    #[tokio::test]
-    async fn split_mode_makes_two_calls() {
-        let provider = RecordingProvider::new();
-        let calls = Arc::clone(&provider.calls);
-
-        let cfg = RankingConfig {
-            split_reasoning_from_extraction: true,
-            reasoning_enabled: true,
-            target_min: 1,
-            target_max: 5,
-            ..RankingConfig::default()
-        };
-
-        let candidates = make_candidates(3);
-
-        let result = run_ranking(
-            candidates,
-            cfg,
-            std::path::Path::new("/tmp"),
-            std::path::Path::new("/tmp"),
-            &[],
-            &provider,
-        )
-        .await;
-
-        assert!(result.is_ok(), "run_ranking failed: {:?}", result.err());
-
-        let recorded = calls.lock().unwrap();
-        assert_eq!(recorded.len(), 2, "split mode must make exactly 2 calls");
-
-        // First call: schema == None, reasoning.enabled == Some(true)
-        let first = &recorded[0];
-        assert!(first.schema.is_none(), "first call must have no schema");
-        assert_eq!(
-            first.reasoning.as_ref().and_then(|r| r.enabled),
-            Some(true),
-            "first call must have reasoning.enabled = true"
-        );
-
-        // Second call: schema is Some, reasoning.enabled == Some(false)
-        let second = &recorded[1];
-        assert!(second.schema.is_some(), "second call must have a schema");
-        assert_eq!(
-            second.reasoning.as_ref().and_then(|r| r.enabled),
-            Some(false),
-            "second call must have reasoning.enabled = false"
-        );
-    }
-
-    // -- Test 9b: extraction call carries the JSON-instructions paragraph ----
-    //
-    // Regression test for the split-mode bug where the JSON-instructions
-    // paragraph was stripped for both passes.  The reasoning pass needs a
-    // clean rubric (no JSON) but the extraction pass needs the field list,
-    // since the OpenAI wire format only sends `response_format: json_object`
-    // (a flag), not a schema description.  If this test fails, real providers
-    // will return syntactically valid but shape-wrong JSON and
-    // `parse_ranking_response` will fail downstream.
-
-    #[tokio::test]
-    async fn split_mode_extraction_call_carries_json_instructions() {
-        let provider = RecordingProvider::new();
-        let calls = Arc::clone(&provider.calls);
-
-        let cfg = RankingConfig {
-            split_reasoning_from_extraction: true,
-            reasoning_enabled: true,
-            target_min: 1,
-            target_max: 5,
-            ..RankingConfig::default()
-        };
-
-        let candidates = make_candidates(3);
-
-        let _ = run_ranking(
-            candidates,
-            cfg,
-            std::path::Path::new("/tmp"),
-            std::path::Path::new("/tmp"),
-            &[],
-            &provider,
-        )
-        .await
-        .expect("run_ranking failed");
-
-        let recorded = calls.lock().unwrap();
-        assert_eq!(recorded.len(), 2);
-
-        // Reasoning call: must NOT contain the JSON-instructions paragraph.
-        assert!(
-            !recorded[0].user.contains("Return JSON"),
-            "reasoning call should not include the JSON-instructions paragraph"
-        );
-
-        // Extraction call: MUST contain the JSON-instructions paragraph so the
-        // model knows which fields to emit.
-        assert!(
-            recorded[1].user.contains("Return JSON"),
-            "extraction call must include the JSON-instructions paragraph so \
-             the model knows the required schema fields"
-        );
-    }
-
-    // -- Test 10: single-call mode makes exactly one call -------------------
-
-    #[tokio::test]
-    async fn single_call_mode_makes_one_call() {
-        let provider = RecordingProvider::new();
-        let calls = Arc::clone(&provider.calls);
-
-        let cfg = RankingConfig {
-            split_reasoning_from_extraction: false,
-            target_min: 1,
-            target_max: 5,
-            ..RankingConfig::default()
-        };
-
-        let candidates = make_candidates(3);
-
-        let result = run_ranking(
-            candidates,
-            cfg,
-            std::path::Path::new("/tmp"),
-            std::path::Path::new("/tmp"),
-            &[],
-            &provider,
-        )
-        .await;
-
-        assert!(result.is_ok(), "run_ranking failed: {:?}", result.err());
-
-        let recorded = calls.lock().unwrap();
-        assert_eq!(recorded.len(), 1, "single-call mode must make exactly 1 call");
-        assert!(recorded[0].schema.is_some(), "single call must have a schema");
-    }
-
-    // -- Test 11: split mode surfaces reasoning_text in meta ----------------
-
-    #[tokio::test]
-    async fn ranking_output_meta_carries_reasoning_text_in_split_mode() {
-        let provider = RecordingProvider::new();
-
-        let cfg = RankingConfig {
-            split_reasoning_from_extraction: true,
-            reasoning_enabled: true,
-            target_min: 1,
-            target_max: 5,
-            ..RankingConfig::default()
-        };
-
-        let candidates = make_candidates(3);
-
-        let result = run_ranking(
-            candidates,
-            cfg,
-            std::path::Path::new("/tmp"),
-            std::path::Path::new("/tmp"),
-            &[],
-            &provider,
-        )
-        .await
-        .expect("run_ranking failed");
-
-        assert!(
-            result.meta.reasoning_text.is_some(),
-            "meta.reasoning_text must be Some in split mode"
-        );
-    }
-
-    // -- Test 12: single-call mode has no reasoning_text in meta (unless model returns one)
-
-    #[tokio::test]
-    async fn ranking_output_meta_has_no_reasoning_text_in_single_call_mode() {
-        let provider = RecordingProvider::new();
-
-        let cfg = RankingConfig {
-            split_reasoning_from_extraction: false,
-            reasoning_enabled: false, // mock won't return reasoning_text
-            target_min: 1,
-            target_max: 5,
-            ..RankingConfig::default()
-        };
-
-        let candidates = make_candidates(3);
-
-        let result = run_ranking(
-            candidates,
-            cfg,
-            std::path::Path::new("/tmp"),
-            std::path::Path::new("/tmp"),
-            &[],
-            &provider,
-        )
-        .await
-        .expect("run_ranking failed");
-
-        // MockProvider's ranking_response does not populate reasoning_text,
-        // so meta.reasoning_text must be None in single-call mode.
-        assert!(
-            result.meta.reasoning_text.is_none(),
-            "meta.reasoning_text must be None in single-call mode without reasoning"
         );
     }
 }
