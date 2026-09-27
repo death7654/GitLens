@@ -27,7 +27,7 @@ mod discovery;
 #[allow(unused_imports)]
 pub use types::{
     CommitRecord, FileChange, HeuristicFlags, MiningConfig, MiningOutput, MiningWindow,
-    SubsystemDef,
+    RepoStatus, SubsystemDef,
 };
 #[allow(unused_imports)]
 pub use discovery::discover_subsystems;
@@ -140,6 +140,46 @@ pub async fn discover_repo_subsystems(repo_path: String) -> Result<Vec<Subsystem
     tauri::async_runtime::spawn_blocking(move || discovery::discover_subsystems(&repo_path))
         .await
         .map_err(|e| format!("discovery task panicked: {e}"))?
+}
+
+/// Reads HEAD's branch name, working-tree cleanliness, and latest commit —
+/// a single cheap `git status`-equivalent, independent of the (potentially
+/// slow) full history mine. Backs the Overview page's stat bar.
+fn read_repo_status(repo_path: &str) -> Result<RepoStatus, String> {
+    let repo = git2::Repository::open(repo_path).map_err(|e| format!("open repo: {e}"))?;
+
+    let head = repo.head().map_err(|e| format!("resolve HEAD: {e}"))?;
+    let branch = head.shorthand().unwrap_or("HEAD").to_string();
+    let commit = head
+        .peel_to_commit()
+        .map_err(|e| format!("peel HEAD to commit: {e}"))?;
+    let full_hash = commit.id().to_string();
+    let latest_commit_hash = full_hash.chars().take(7).collect();
+    let latest_commit_summary = commit.summary().unwrap_or("").to_string();
+
+    let mut opts = git2::StatusOptions::new();
+    opts.include_untracked(true).include_ignored(false);
+    let statuses = repo
+        .statuses(Some(&mut opts))
+        .map_err(|e| format!("git status: {e}"))?;
+    let is_clean = statuses.is_empty();
+
+    Ok(RepoStatus {
+        branch,
+        is_clean,
+        latest_commit_hash,
+        latest_commit_summary,
+    })
+}
+
+/// The Tauri IPC command Person 5's frontend calls right after a folder is
+/// chosen, to populate the Overview page's stat bar. Cheap and independent
+/// of `extract_git_history` — does not require extraction to have run.
+#[tauri::command]
+pub async fn get_repo_status(repo_path: String) -> Result<RepoStatus, String> {
+    tauri::async_runtime::spawn_blocking(move || read_repo_status(&repo_path))
+        .await
+        .map_err(|e| format!("status task panicked: {e}"))?
 }
 
 #[cfg(test)]

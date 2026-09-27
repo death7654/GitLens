@@ -99,6 +99,7 @@ pub fn run() {
             read_repo_file,
             git_mining::extract_git_history,
             git_mining::discover_repo_subsystems,
+            git_mining::get_repo_status,
             significance_ranking::rank_significant_commits,
             tour_narration::fetch_stop_documents,
             tour_narration::narrate_stop,

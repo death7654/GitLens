@@ -5,6 +5,17 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <meta name="theme-color" content="#0f1117" />
   <title>GitLens</title>
+  <!-- Platform detection runs synchronously, before any CSS paints, so the
+       window never flashes with the wrong chrome (floating translucent card
+       on macOS vs. a flush opaque window on Linux). Kept out of main.js
+       because that script is deferred and would run after first paint. -->
+  <script>
+    (function () {
+      var ua = navigator.userAgent || '';
+      var isMac = /Mac OS X|Macintosh/.test(ua) && !/iPhone|iPad|iPod/.test(ua);
+      document.documentElement.classList.add(isMac ? 'platform-mac' : 'platform-linux');
+    })();
+  </script>
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" />
   <link rel="stylesheet" href="/styles.css" />
   <link rel="stylesheet" href="/visualizer.css" />
@@ -15,8 +26,23 @@
 </head>
 <body>
 
+<!-- The floating rounded/shadowed "card" look (macOS) vs. a flush opaque
+     window (Linux) both live on this wrapper — see .app-shell in styles.css. -->
+<div class="app-shell">
+
 <!-- ═══════════════════════════════════════════════════════ TOPBAR ══ -->
-<header class="topbar" role="banner">
+<header class="topbar" data-tauri-drag-region role="banner">
+
+  <!-- Traffic-light window controls (custom, visible on all platforms when
+       decorations=false). On macOS the native controls are hidden by
+       titleBarStyle=overlay so these replace them exactly. On Linux/WebKit
+       they provide the only close/minimize/maximize affordance. -->
+  <div class="wm-buttons" id="wm-buttons" aria-label="Window controls">
+    <button class="wm-btn wm-close"    id="wm-close"    aria-label="Close"    title="Close"></button>
+    <button class="wm-btn wm-minimize" id="wm-minimize" aria-label="Minimize" title="Minimize"></button>
+    <button class="wm-btn wm-maximize" id="wm-maximize" aria-label="Maximize" title="Maximize"></button>
+  </div>
+
   <a class="brand" href="#" aria-label="GitLens home">
     <i class="bi bi-git brand-icon"></i>
     <span class="brand-text">GitLens</span>
@@ -403,6 +429,8 @@
 
   </main><!-- /main-content -->
 </div><!-- /app-body -->
+
+</div><!-- /app-shell -->
 
 <!-- ─────────────── TOAST ── -->
 <div class="toast" id="toast" role="status" aria-live="assertive" aria-atomic="true"></div>

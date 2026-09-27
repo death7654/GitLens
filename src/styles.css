@@ -50,8 +50,12 @@
   --shadow-md: 0 4px 12px rgba(23,32,47,.08), 0 2px 6px rgba(23,32,47,.05);
 
   /* Layout */
-  --topbar-h:  58px;
-  --sidebar-w: 220px;
+  --topbar-h:    52px;
+  --sidebar-w:   220px;
+  /* Window-control gutters. macOS lights sit top-left (Apple's ~20px inset,
+     three 12px dots); Linux's larger square buttons sit top-right instead. */
+  --wm-zone-w:        76px;
+  --wm-zone-w-linux:  104px;
 }
 
 body.dark {
@@ -61,7 +65,6 @@ body.dark {
   --surface-3: #242942;
   --ink:       #e8edf5;
   --ink-2:     #a8b8cc;
-  --muted:     #6070890;
   --muted:     #607089;
   --line:      #262d3e;
   --orange-bg: #2a1800;
@@ -84,8 +87,33 @@ html, body {
   font-size: 14px;
   line-height: 1.6;
   color: var(--ink);
+  /* Solid by default (safest baseline — many Linux compositors don't handle
+     window transparency cleanly and paint a black window otherwise). macOS
+     opts into a transparent window below, since tauri.macos.conf.json turns
+     on real window transparency only on that platform. */
   background: var(--bg);
   -webkit-font-smoothing: antialiased;
+  /* prevent rubber-band scroll outside the window chrome */
+  overflow: hidden;
+}
+
+html.platform-mac body {
+  background: transparent;
+}
+
+/* .app-shell is the floating "card": rounded + shadowed on macOS to sit on
+   the transparent window like a native vibrancy window; flush and square on
+   Linux, where the window itself is already opaque and rectangular. */
+.app-shell {
+  min-height: 100vh;
+  background: var(--bg);
+  overflow: hidden;
+}
+
+html.platform-mac .app-shell {
+  border-radius: 12px;
+  /* subtle shadow so the window lifts off the desktop */
+  box-shadow: 0 22px 70px rgba(0,0,0,.28), 0 4px 16px rgba(0,0,0,.18);
 }
 
 button { font: inherit; cursor: pointer; }
@@ -104,6 +132,36 @@ pre, code { font-family: var(--mono); }
   align-items: center;
   padding: 0 20px;
   gap: 20px;
+  /* make the whole bar draggable; individual interactive elements override
+     this with -webkit-app-region: no-drag below */
+  -webkit-app-region: drag;
+  user-select: none;
+}
+
+/* macOS: traffic lights sit at the left, so reserve room there.
+   Linux: our buttons sit at the right (see .wm-buttons below), so reserve
+   room on that side instead. */
+html.platform-mac .topbar    { padding-left: var(--wm-zone-w); }
+html.platform-linux .topbar  { padding-right: var(--wm-zone-w-linux); }
+
+/* Frosted-glass vibrancy, like a native macOS title bar. Backdrop-filter is
+   just a page-local blur (not dependent on OS window transparency), so it's
+   safe to apply on Linux too — it simply blurs the app's own scrolled
+   content instead of the desktop behind the window. */
+@supports (backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px)) {
+  .topbar {
+    background: color-mix(in srgb, var(--surface) 72%, transparent);
+    -webkit-backdrop-filter: saturate(180%) blur(20px);
+    backdrop-filter: saturate(180%) blur(20px);
+  }
+}
+
+/* every interactive element in the topbar must opt out of dragging */
+.brand,
+.topbar-actions,
+.topbar-actions *,
+.wm-buttons {
+  -webkit-app-region: no-drag;
 }
 
 .brand {
@@ -116,7 +174,7 @@ pre, code { font-family: var(--mono); }
   font-size: 16px;
   letter-spacing: -.04em;
   flex-shrink: 0;
-  width: 160px;
+  width: 152px;
 }
 
 .brand-icon {
@@ -164,6 +222,144 @@ pre, code { font-family: var(--mono); }
   color: var(--green);
 }
 
+/* ── Traffic-light window controls ─────────────────────────────────────────── */
+/*
+ * Shared positioning: taken out of flex flow so the buttons never push the
+ * brand around, vertically centred in the title bar. DOM order is always
+ * close → minimize → maximize (macOS order); Linux is re-flowed onto the
+ * opposite side and re-ordered with `order` below rather than in markup, so
+ * the click handlers (wired by id in main.js) never have to care which
+ * platform they're on.
+ */
+.wm-buttons {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  display: flex;
+  align-items: center;
+  z-index: 10;
+}
+
+.wm-btn {
+  border: none;
+  padding: 0;
+  flex-shrink: 0;
+  position: relative;
+  transition: filter var(--t-fast), background var(--t-fast), color var(--t-fast);
+}
+
+.wm-btn::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
+}
+
+/* ── macOS: pixel-perfect traffic lights ──
+   diameter 12px, gap 8px, left margin 14px → first dot centred at Apple's
+   20px inset from the window edge. */
+html.platform-mac .wm-buttons { left: 14px; gap: 8px; }
+
+html.platform-mac .wm-btn {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  cursor: default;
+}
+
+html.platform-mac .wm-close    { background: #ff5f57; }
+html.platform-mac .wm-minimize { background: #febc2e; }
+html.platform-mac .wm-maximize { background: #28c840; }
+
+/* glyph icons appear on group hover, matching macOS exactly */
+html.platform-mac .wm-btn::before {
+  opacity: 0;
+  transition: opacity var(--t-fast);
+  font-size: 8px;
+  font-weight: 900;
+}
+html.platform-mac .wm-buttons:hover .wm-btn::before { opacity: 1; }
+
+html.platform-mac .wm-close::before {
+  content: '×';
+  color: #4d0000;
+  font-size: 10px;
+  left: 1px;
+  top: -1px;
+}
+html.platform-mac .wm-minimize::before {
+  content: '—';
+  color: #5a3a00;
+  font-size: 7px;
+  top: -1px;
+}
+/* zoom button shows an expand glyph normally, and a restore glyph once the
+   window is actually maximized (state kept in sync by main.js). */
+html.platform-mac .wm-maximize::before {
+  content: '↗';
+  color: #003000;
+  font-size: 8px;
+  top: -1px;
+}
+html.platform-mac .wm-maximize.is-maximized::before {
+  content: '↙';
+}
+
+/* inactive state: grey out when window loses focus, like real macOS */
+html.platform-mac body.wm-inactive .wm-close,
+html.platform-mac body.wm-inactive .wm-minimize,
+html.platform-mac body.wm-inactive .wm-maximize {
+  background: #d0d0d0;
+}
+html.platform-mac body.dark.wm-inactive .wm-close,
+html.platform-mac body.dark.wm-inactive .wm-minimize,
+html.platform-mac body.dark.wm-inactive .wm-maximize {
+  background: #444;
+}
+
+/* ── Linux: simple flat icon buttons, right-aligned ──
+   Reordered visually (DOM stays close/minimize/maximize) to the common
+   GNOME/Adwaita/Windows convention of minimize, maximize, close. */
+html.platform-linux .wm-buttons { right: 10px; gap: 2px; }
+
+html.platform-linux .wm-close     { order: 3; }
+html.platform-linux .wm-minimize  { order: 1; }
+html.platform-linux .wm-maximize  { order: 2; }
+
+html.platform-linux .wm-btn {
+  width: 30px;
+  height: 30px;
+  border-radius: var(--r-sm);
+  background: transparent;
+  cursor: pointer;
+}
+html.platform-linux .wm-btn::before {
+  opacity: 1;
+  font-family: var(--sans);
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--ink-2);
+}
+html.platform-linux .wm-btn:hover { background: var(--surface-2); }
+
+html.platform-linux .wm-minimize::before { content: '−'; }
+html.platform-linux .wm-maximize::before { content: '⬜'; font-size: 9px; }
+html.platform-linux .wm-maximize.is-maximized::before { content: '❐'; font-size: 10px; }
+html.platform-linux .wm-close::before { content: '×'; font-size: 16px; }
+
+/* close button turns red on hover, matching Adwaita/GNOME */
+html.platform-linux .wm-close:hover {
+  background: var(--red);
+}
+html.platform-linux .wm-close:hover::before { color: #fff; }
+
+/* inactive state: fade the whole cluster when the window loses focus */
+html.platform-linux body.wm-inactive .wm-btn::before { opacity: .45; }
+
+/* ── Icon button ─────────────────────────────────────────────────────────────── */
 .icon-btn {
   border: 0;
   background: transparent;
@@ -187,6 +383,8 @@ pre, code { font-family: var(--mono); }
 .app-body {
   display: flex;
   min-height: calc(100vh - var(--topbar-h));
+  /* let the sidebar scroll independently of the main area */
+  overflow: hidden;
 }
 
 /* ── Sidebar ─────────────────────────────────────────────────────────────────── */
@@ -198,11 +396,37 @@ pre, code { font-family: var(--mono); }
   display: flex;
   flex-direction: column;
   padding: 16px 10px 14px;
-  position: sticky;
-  top: var(--topbar-h);
+  /* fixed height so it doesn't scroll with main content */
   height: calc(100vh - var(--topbar-h));
   overflow-y: auto;
 }
+
+/* Frosted sidebar, like Finder/Mail's source list. Purely a local blur of
+   the app's own content — safe on Linux too. */
+@supports (backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px)) {
+  .sidebar {
+    background: color-mix(in srgb, var(--surface) 82%, transparent);
+    -webkit-backdrop-filter: saturate(180%) blur(24px);
+    backdrop-filter: saturate(180%) blur(24px);
+  }
+}
+
+/* Thin, self-colouring scrollbars to match native macOS chrome (Linux/GTK
+   WebKit and Chromium-based webviews both honour the ::-webkit- properties). */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--muted) transparent;
+}
+*::-webkit-scrollbar { width: 10px; height: 10px; }
+*::-webkit-scrollbar-track { background: transparent; }
+*::-webkit-scrollbar-thumb {
+  background: var(--muted);
+  opacity: .5;
+  border-radius: 10px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+*::-webkit-scrollbar-thumb:hover { background: var(--ink-2); }
 
 .sidebar-top { flex: 1; }
 

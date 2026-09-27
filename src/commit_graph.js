@@ -20,29 +20,35 @@ function esc(str) {
 /** Priority-ordered trigger colour map */
 const TRIGGER_COLORS = {
   revert:               '#7c5cd8',
-  was_reverted:         '#e8922c',
   repeated_fix:         '#d97706',
   incident_linked:      '#dc2626',
+  discussion_rich:      '#0ea5e9',
   architecture_shaping: '#3b82d4',
 };
 
+// Backend's RankedCandidate.signals is a SignalSummary object of booleans
+// (architecture_shaping, revert, incident_linked, discussion_rich,
+// repeated_fix) — NOT an array of trigger-kind strings (that shape only
+// exists later, as TourStop.triggered_by, once a stop has been narrated).
 const TRIGGER_PRIORITY = [
   'revert',
-  'was_reverted',
   'repeated_fix',
   'incident_linked',
+  'discussion_rich',
   'architecture_shaping',
 ];
 
 /**
- * Derive the display colour for a RankedCandidate based on its signals array.
- * @param {string[]} signals
+ * Derive the display colour for a RankedCandidate based on its `signals`
+ * SignalSummary object ({ revert, incident_linked, repeated_fix,
+ * discussion_rich, architecture_shaping } booleans).
+ * @param {Record<string, boolean>} signals
  * @returns {string}
  */
 function colorForSignals(signals) {
-  if (!signals || signals.length === 0) return '#3b82d4';
+  if (!signals) return '#3b82d4';
   for (const kind of TRIGGER_PRIORITY) {
-    if (signals.includes(kind)) return TRIGGER_COLORS[kind];
+    if (signals[kind]) return TRIGGER_COLORS[kind];
   }
   return '#3b82d4';
 }

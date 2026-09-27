@@ -10,9 +10,16 @@
     "withGlobalTauri": true,
     "windows": [
       {
-        "title": "gitlens",
-        "width": 800,
-        "height": 600
+        "title": "GitLens",
+        "label": "main",
+        "width": 1280,
+        "height": 820,
+        "minWidth": 780,
+        "minHeight": 520,
+        "center": true,
+        "resizable": true,
+        "decorations": false,
+        "transparent": false
       }
     ],
     "security": {

@@ -19,6 +19,7 @@
 
 const { invoke } = window.__TAURI__.core;
 const { open }   = window.__TAURI__.dialog;
+const { getCurrentWindow } = window.__TAURI__.window;
 
 // ---------------------------------------------------------------------------
 // Globals
@@ -122,10 +123,37 @@ async function chooseFolder() {
     if (!chosen || typeof chosen !== 'string') return null;
     repoPath = chosen;
     applyRepoPath(repoPath);
+    refreshRepoStatus(repoPath);
     return repoPath;
   } catch (e) {
     toast(`Folder picker unavailable: ${e}`, 'error');
     return null;
+  }
+}
+
+/**
+ * Populate the Overview stat bar (branch / working-tree / latest commit)
+ * via the `get_repo_status` command. Independent of extraction — safe to
+ * call the moment a folder is chosen. Failures (e.g. folder isn't a git
+ * repo) degrade to em-dashes rather than blocking the rest of the UI.
+ * @param {string} path
+ */
+async function refreshRepoStatus(path) {
+  $('#stat-branch').textContent = '…';
+  $('#stat-clean').textContent = '…';
+  $('#stat-commit').textContent = '…';
+  try {
+    const status = await invoke('get_repo_status', { repoPath: path });
+    $('#stat-branch').textContent = status.branch;
+    $('#stat-clean').textContent = status.is_clean ? 'Clean' : 'Modified';
+    $('#stat-commit').textContent = status.latest_commit_summary
+      ? `${status.latest_commit_hash} · ${status.latest_commit_summary}`
+      : status.latest_commit_hash;
+  } catch (err) {
+    $('#stat-branch').textContent = '—';
+    $('#stat-clean').textContent = '—';
+    $('#stat-commit').textContent = '—';
+    log(`Could not read repo status: ${esc(String(err))}`, 'error');
   }
 }
 
@@ -256,16 +284,53 @@ async function previewEntry(entry, btn) {
 // Extraction
 // ---------------------------------------------------------------------------
 
+/**
+ * Navigate to the extraction wizard for `path` and, if the subsystems box
+ * is still empty, auto-run discovery immediately — so the common case
+ * ("I opened a repo, now mine it") needs no manual JSON editing before
+ * "Run extraction" does anything. This is the fix for extraction appearing
+ * to "just sit there": previously the subsystems textarea started empty,
+ * clicking Run extraction silently no-opped behind a toast that vanishes
+ * in ~4s, and the only way forward was to notice and click Auto-discover
+ * by hand.
+ * @param {string} path
+ */
+function enterExtractionWizard(path) {
+  $('#mining-repo-path').value = path;
+  showView('extraction');
+  if (!$('#subsystems-input').value.trim()) {
+    discoverSubsystems();
+  }
+}
+
 /** @returns {Promise<void>} */
 async function runExtraction() {
   const pathVal = $('#mining-repo-path').value.trim();
-  if (!pathVal) { toast('Enter a repository path first.', 'error'); return; }
+  const status  = $('#mining-status');
+  if (!pathVal) {
+    status.textContent = 'Enter a repository path first.';
+    toast('Enter a repository path first.', 'error');
+    return;
+  }
 
   let subsystems;
   const raw = $('#subsystems-input').value.trim();
-  if (!raw) { toast('Define at least one subsystem (or auto-discover first).', 'error'); return; }
+  if (!raw) {
+    status.textContent = 'Define at least one subsystem, or click "Auto-discover" above.';
+    toast('Define at least one subsystem (or auto-discover first).', 'error');
+    return;
+  }
   try { subsystems = JSON.parse(raw); }
-  catch (e) { toast(`Subsystems JSON is invalid: ${e.message}`, 'error'); return; }
+  catch (e) {
+    status.textContent = `Subsystems JSON is invalid: ${e.message}`;
+    toast(`Subsystems JSON is invalid: ${e.message}`, 'error');
+    return;
+  }
+  if (!Array.isArray(subsystems) || subsystems.length === 0) {
+    status.textContent = 'Subsystems must be a non-empty array — click "Auto-discover" to fill it in.';
+    toast('Subsystems must be a non-empty array.', 'error');
+    return;
+  }
 
   const maxAge    = parseInt($('#max-age-input').value, 10) || null;
   const maxCom    = parseInt($('#max-commits-input').value, 10) || null;
@@ -276,8 +341,7 @@ async function runExtraction() {
     window: { max_age_days: maxAge, max_commits_per_subsystem: maxCom },
   };
 
-  const btn    = $('#run-mining-btn');
-  const status = $('#mining-status');
+  const btn = $('#run-mining-btn');
   btn.disabled = true;
   btn.innerHTML = '<div class="spinner" style="width:16px;height:16px;border-width:2px"></div> Extracting…';
   status.textContent = 'Scanning commit history…';
@@ -305,10 +369,29 @@ async function runExtraction() {
 
     // Show results summary
     showExtractionResults(result, elapsed);
-    status.textContent = `Done in ${elapsed}s — ${result.candidate_count} candidates found.`;
 
-    log(`Extracted ${result.total_commits_scanned} commits from ${result.subsystems_scanned.length} subsystem(s), found <strong>${result.candidate_count}</strong> candidates`, 'success');
-    toast(`${result.candidate_count} candidates found in ${elapsed}s`, 'success');
+    if (result.candidate_count === 0) {
+      // A real, non-error outcome: the heuristic filter (reverts,
+      // repeated-fix files, incident refs) only keeps commits matching one
+      // of those patterns. A repo without any of those in its scanned
+      // window legitimately yields zero — which otherwise looks identical
+      // to "extraction is broken". Say so explicitly.
+      status.textContent =
+        `Done in ${elapsed}s — scanned ${result.total_commits_scanned} commits, ` +
+        `0 matched a significance heuristic (revert / repeated-fix / incident reference).`;
+      log(
+        `Extraction finished but found <strong>0 candidates</strong> across ${result.total_commits_scanned} commits. ` +
+        `This repo's history may not contain reverts, repeated-fix files, or incident-tagged commits ` +
+        `in the scanned window — try widening "Max age" / "Max commits" above, or check your subsystem ` +
+        `path prefixes actually match files in the repo.`,
+        'info'
+      );
+      toast('Extraction finished — 0 significant commits found. See Activity log for why.', 'info');
+    } else {
+      status.textContent = `Done in ${elapsed}s — ${result.candidate_count} candidates found.`;
+      log(`Extracted ${result.total_commits_scanned} commits from ${result.subsystems_scanned.length} subsystem(s), found <strong>${result.candidate_count}</strong> candidates`, 'success');
+      toast(`${result.candidate_count} candidates found in ${elapsed}s`, 'success');
+    }
 
     // Enable tour nav item
     $('#nav-tour').disabled = false;
@@ -341,6 +424,15 @@ function showExtractionResults(result, elapsed) {
 
   $('#mining-output-pre').textContent = JSON.stringify(result, null, 2);
   $('#extraction-results').hidden = false;
+
+  // Ranking has nothing to work with on zero candidates — disable the
+  // proceed button rather than let the user hit a confusing
+  // "no candidates to rank" error one step later.
+  const proceedBtn = $('#proceed-to-tour-btn');
+  proceedBtn.disabled = result.candidate_count === 0;
+  proceedBtn.title = result.candidate_count === 0
+    ? 'No significant commits were found to rank — widen the mining window or check subsystems.'
+    : '';
 }
 
 /** Auto-discover subsystems from the repo tree. */
@@ -734,6 +826,51 @@ window.tourOnRankingReady = function tourOnRankingReady() {
 };
 
 // ---------------------------------------------------------------------------
+// Window controls (traffic lights)
+// ---------------------------------------------------------------------------
+
+/**
+ * Wire the custom traffic-light buttons to real window actions and keep them
+ * in sync with actual window state. Works identically on macOS and Linux —
+ * both platforms run with native decorations off, so these three buttons are
+ * the only way to close/minimize/maximize the app.
+ */
+function initWindowControls() {
+  const appWindow    = getCurrentWindow();
+  const closeBtn     = $('#wm-close');
+  const minimizeBtn  = $('#wm-minimize');
+  const maximizeBtn  = $('#wm-maximize');
+  const topbar       = $('.topbar');
+
+  closeBtn.addEventListener('click', () => appWindow.close());
+  minimizeBtn.addEventListener('click', () => appWindow.minimize());
+  maximizeBtn.addEventListener('click', () => appWindow.toggleMaximize());
+
+  /** Reflect real maximized state in the zoom button's hover glyph/tooltip. */
+  async function syncMaximizedState() {
+    try {
+      const isMaximized = await appWindow.isMaximized();
+      maximizeBtn.classList.toggle('is-maximized', isMaximized);
+      maximizeBtn.title = isMaximized ? 'Restore' : 'Maximize';
+    } catch { /* window may be mid-teardown; ignore */ }
+  }
+  syncMaximizedState();
+  appWindow.onResized(() => syncMaximizedState());
+
+  // Double-clicking empty space in the title bar toggles maximize — matches
+  // native title-bar behaviour on both macOS and every Linux desktop shell.
+  topbar.addEventListener('dblclick', (e) => {
+    if (e.target.closest('.wm-buttons, .topbar-actions, .brand')) return;
+    appWindow.toggleMaximize();
+  });
+
+  // Dim the traffic lights when the window loses focus, like every native app.
+  appWindow.onFocusChanged(({ payload: focused }) => {
+    document.body.classList.toggle('wm-inactive', !focused);
+  });
+}
+
+// ---------------------------------------------------------------------------
 // Dark mode
 // ---------------------------------------------------------------------------
 
@@ -749,6 +886,9 @@ function applyTheme(dark) {
 // ---------------------------------------------------------------------------
 
 window.addEventListener('DOMContentLoaded', () => {
+
+  // ── Window controls ───────────────────────────────────────────────────────
+  initWindowControls();
 
   // ── Theme ──────────────────────────────────────────────────────────────────
   const savedDark = (() => { try { return localStorage.getItem('gl-dark') === '1'; } catch { return false; } })();
@@ -778,6 +918,15 @@ window.addEventListener('DOMContentLoaded', () => {
     if (tourState === 'idle') setTourState('idle');
   });
 
+  // History and Settings have no dedicated view yet — give explicit
+  // feedback instead of leaving the click silently do nothing.
+  $('#nav-history').addEventListener('click', () => {
+    toast('History view is coming soon.', 'info');
+  });
+  $('#nav-settings').addEventListener('click', () => {
+    toast('Settings are not implemented yet.', 'info');
+  });
+
   // ── Overview actions ───────────────────────────────────────────────────────
   $('#git-pull-btn').addEventListener('click', async () => {
     if (!repoPath) { toast('No repository open.', 'error'); return; }
@@ -787,9 +936,8 @@ window.addEventListener('DOMContentLoaded', () => {
   });
 
   $('#run-extraction-btn').addEventListener('click', () => {
-    if (!repoPath) { chooseFolder().then(p => p && showView('extraction')); return; }
-    $('#mining-repo-path').value = repoPath;
-    showView('extraction');
+    if (!repoPath) { chooseFolder().then(p => p && enterExtractionWizard(p)); return; }
+    enterExtractionWizard(repoPath);
   });
 
   // ── File search ────────────────────────────────────────────────────────────

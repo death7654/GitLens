@@ -93,6 +93,19 @@ pub struct CommitRecord {
     pub heuristics: HeuristicFlags,
 }
 
+/// Lightweight, read-only snapshot of a repo's current HEAD state — powers
+/// the Overview page's stat bar (branch / working-tree / latest commit).
+/// Deliberately separate from `MiningOutput`: this is cheap (single HEAD +
+/// status read) and safe to call the moment a folder is chosen, before any
+/// history mining has happened.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RepoStatus {
+    pub branch: String,
+    pub is_clean: bool,
+    pub latest_commit_hash: String,
+    pub latest_commit_summary: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MiningOutput {
     pub repo_path: String,
