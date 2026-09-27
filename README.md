@@ -1,4 +1,4 @@
-# Onboarding Ghost
+# GitLens
 ### A GitLens feature — built by **WireCoffins** for the IBM Bob 2.0 Hackathon
 
 **License:** AGPL-3.0
