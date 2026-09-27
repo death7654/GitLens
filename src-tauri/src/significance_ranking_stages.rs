@@ -1,32 +1,33 @@
 //! Person 3 — stages 1–3 of the ranking pipeline.
 //!
 //! Every stage is disk-cached. Cache keys:
-//!   Stage 1 (file summaries):   sha-free DefaultHasher over file *content*
+//!   Stage 1 (file summaries):   SHA-256 of file *content*
 //!                               → summaries survive renames and re-commits
 //!   Stage 2 (commit summaries): commit hash
-//!   Stage 3 (project summary):  repo_path + prompt_version
+//!   Stage 3 (project summary):  repo_path + prompt_version + subsystem set
 //!
 //! All three take an injected `ModelProvider` (P6) and are no-ops when the
 //! caller hasn't enabled them.
 
 use std::collections::HashMap;
-use std::collections::hash_map::DefaultHasher;
-use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
+
+use sha2::{Digest, Sha256};
 
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 
+use crate::git_mining::SubsystemDef;
 use crate::provider::{ModelProvider, ModelRequest};
 use crate::significance_ranking_types::CandidateInput;
 
 // ---------- cache plumbing ----------
 
 fn hash_bytes(bytes: &[u8]) -> String {
-    let mut h = DefaultHasher::new();
-    bytes.hash(&mut h);
-    format!("{:016x}", h.finish())
+    let mut h = Sha256::new();
+    h.update(bytes);
+    format!("{:x}", h.finalize())
 }
 
 fn cache_path(root: &Path, kind: &str, key: &str) -> PathBuf {
@@ -146,8 +147,22 @@ pub struct CommitSummary {
     pub expanded: bool,     // true if the vague-trigger fired and we used diff/blame evidence
 }
 
-/// Vague-trigger from the plan. Any single match → expand with extra evidence.
-/// Kept deliberately simple; tune thresholds against the demo repo.
+/// Vague-trigger from the plan. Returns `true` when a commit message is too
+/// terse to stand on its own, signalling that the summarise-commit prompt
+/// should ask the model to infer intent from diff/file evidence.
+///
+/// A message is considered *not* vague only when it satisfies all three of:
+///   1. At least 40 characters long (not a one-liner stub).
+///   2. Starts with a conventional commit prefix (`feat`, `fix`, …) so the
+///      message declares its intent explicitly.
+///   3. Contains an issue/incident reference (`#123`, `INC-4821`, …) that
+///      links it to external context a reader can follow.
+///
+/// Free-form descriptive sentences (e.g. "Rewrite the auth session store to
+/// use Redis") are long enough but lack a structured prefix and reference, so
+/// they *do* fire the trigger — the model gets the extra evidence hint, which
+/// is appropriate because the message, while descriptive, gives no structured
+/// traceability signal.
 pub fn vague_trigger(message: &str) -> bool {
     let m = message.trim();
 
@@ -237,31 +252,61 @@ pub async fn summarize_commit(
 
 // ---------- Stage 3 — project summary ----------
 
-/// Hierarchical reduce: per-subsystem → repo. One artifact per (repo, prompt_version).
+/// Hierarchical reduce: per-subsystem → repo. One artifact per
+/// (repo, prompt_version, subsystem-set) tuple.
+///
+/// `subsystems` is the authoritative partition list from P1's `MiningConfig`
+/// — it carries the *path prefixes* that files are matched against, not just
+/// the subsystem *names*. Passing prefixes (rather than names) is what makes
+/// the bucketing step actually work: a file at `src/backend/foo.rs` matches
+/// the subsystem whose prefixes include `"src/backend/"`, not one merely
+/// named `"backend"`.
 pub async fn build_project_summary(
     repo_path: &Path,
-    subsystem_names: &[String],
+    subsystems: &[SubsystemDef],
     file_summaries: &HashMap<String, FileSummary>,
     cache_root: &Path,
     prompt_version: &str,
     provider: &dyn ModelProvider,
     model_id: &str,
 ) -> Result<String, String> {
+    // Cache key includes a canonical fingerprint of the subsystem set, since
+    // changing which prefixes are configured changes the bucketing output.
+    let subsystems_fingerprint = {
+        let mut pairs: Vec<(String, Vec<String>)> = subsystems
+            .iter()
+            .map(|s| {
+                let mut p = s.path_prefixes.clone();
+                p.sort();
+                (s.name.clone(), p)
+            })
+            .collect();
+        pairs.sort();
+        let s = serde_json::to_string(&pairs).unwrap_or_default();
+        hash_bytes(s.as_bytes())
+    };
     let key = format!(
-        "{}-{}",
+        "{}-{}-{}",
         hash_bytes(repo_path.to_string_lossy().as_bytes()),
         hash_bytes(prompt_version.as_bytes()),
+        subsystems_fingerprint,
     );
     let cache = cache_path(cache_root, "project_summaries", &key);
     if let Some(s) = read_cache::<String>(&cache) {
         return Ok(s);
     }
 
-    // Bucket file summaries by subsystem (approx: by top-level path segment).
+    // Bucket each file's summary under the first configured subsystem whose
+    // prefix list matches the file's path. Files matching no subsystem fall
+    // into "misc" so they aren't silently dropped.
     let mut by_subsystem: HashMap<String, Vec<&FileSummary>> = HashMap::new();
     for (path, summary) in file_summaries {
-        let top = path.split('/').next().unwrap_or("misc").to_string();
-        by_subsystem.entry(top).or_default().push(summary);
+        let bucket = subsystems
+            .iter()
+            .find(|sub| sub.path_prefixes.iter().any(|p| path.starts_with(p.as_str())))
+            .map(|sub| sub.name.clone())
+            .unwrap_or_else(|| "misc".to_string());
+        by_subsystem.entry(bucket).or_default().push(summary);
     }
 
     // Reduce pass 1: per-subsystem summary.
@@ -285,7 +330,7 @@ pub async fn build_project_summary(
     }
 
     // Reduce pass 2: repo summary.
-    let mut user = format!("Project subsystems ({}):\n", subsystem_names.len());
+    let mut user = format!("Project subsystems ({}):\n", subsystems.len());
     for (name, summary) in &subsystem_summaries {
         user.push_str(&format!("\n## {name}\n{summary}\n"));
     }

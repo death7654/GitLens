@@ -4,6 +4,7 @@ mod doc_fetch;
 mod git_mining;
 mod mock_provider;
 mod provider;
+mod testing_api;
 mod significance_ranking;
 mod significance_ranking_stages;
 mod significance_ranking_types;

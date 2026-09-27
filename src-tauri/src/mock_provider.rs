@@ -15,6 +15,7 @@
 //! They must not leak into `TriggerKind` or any production schema.
 
 use crate::provider::{ModelProvider, ModelRequest, ModelResponse};
+use crate::testing_api;
 
 /// Hardcoded hash that always causes `MockProvider::call` to return `Err`
 /// when a `MOCK_TRIGGER:` hint is present. Workstream D must ensure this hash
@@ -24,6 +25,12 @@ pub const MOCK_FAIL_HASH: &str = "0000000000000000000000000000000000000001";
 
 pub struct MockProvider;
 
+#[async_trait::async_trait]
+impl ModelProvider for MockProvider {
+    async fn call(&self, req: ModelRequest) -> Result<ModelResponse, String> {
+        Ok(testing_api::dummy_response(&req))
+    }
+}
 /// Returns a canned-but-realistic `{"title": ..., "narration": ...}` JSON
 /// value for the given trigger kind (snake_case). Used only by `MockProvider`.
 fn narration_response_for_trigger(trigger: &str) -> serde_json::Value {
