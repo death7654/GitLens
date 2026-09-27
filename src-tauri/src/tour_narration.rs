@@ -376,7 +376,10 @@ pub async fn narrate_stop(
     };
 
     // Exponential backoff retry: up to 3 attempts, delays 1s then 2s.
-    let provider = provider_state.provider.clone();
+    let provider = provider_state.provider
+        .lock()
+        .map_err(|_| "Provider lock poisoned".to_string())?
+        .clone();
     let mut last_err = String::new();
     let retry_delays_ms: &[u64] = &[0, 1000, 2000];
 

@@ -500,7 +500,10 @@ pub async fn rank_significant_commits(
     provider_state: tauri::State<'_, crate::ProviderState>,
 ) -> Result<RankingOutput, String> {
     let cfg = cfg.unwrap_or_default();
-    let provider = provider_state.provider.clone();
+    let provider = provider_state.provider
+        .lock()
+        .map_err(|_| "Provider lock poisoned".to_string())?
+        .clone();
     run_ranking(
         candidates,
         cfg,

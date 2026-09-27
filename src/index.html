@@ -427,6 +427,56 @@
       </div>
     </section>
 
+    <!-- ─────────────────────────── SETTINGS ── -->
+    <section class="view view-settings" id="view-settings" hidden aria-labelledby="settings-heading">
+      <div class="page-header">
+        <div class="page-header-info">
+          <p class="eyebrow">Configuration</p>
+          <h1 id="settings-heading" class="page-title">Settings</h1>
+          <p class="page-subtitle">Configure the AI model provider used for tour generation.</p>
+        </div>
+      </div>
+
+      <div class="settings-section">
+        <h2 class="settings-section-title"><i class="bi bi-cpu"></i> Model provider</h2>
+        <p class="settings-section-desc">Enter an API key to activate a provider. This is sent to the backend and takes effect immediately — no restart needed.</p>
+
+        <div class="form-grid">
+          <div class="form-field">
+            <label for="settings-provider-select">Provider</label>
+            <select id="settings-provider-select" class="settings-select">
+              <option value="gemini">Google Gemini</option>
+              <option value="openai">OpenAI / OpenAI-compatible</option>
+            </select>
+          </div>
+
+          <div class="form-field" id="settings-base-url-field" hidden>
+            <label for="settings-base-url">Base URL</label>
+            <input type="text" id="settings-base-url" placeholder="http://localhost:11434/v1" autocomplete="off" />
+            <span class="field-hint">Override for local servers (Ollama, LM Studio, etc.). Leave blank for the real OpenAI API.</span>
+          </div>
+
+          <div class="form-field">
+            <label for="settings-api-key">API key</label>
+            <div class="input-with-btn">
+              <input type="password" id="settings-api-key" placeholder="Paste your key here…" autocomplete="off" />
+              <button class="btn btn-ghost btn-sm" id="settings-reveal-btn" aria-label="Show / hide key" title="Show / hide key">
+                <i class="bi bi-eye" id="settings-reveal-icon"></i>
+              </button>
+            </div>
+            <span class="field-hint">The key is sent to the Rust backend and used for AI requests. It is not stored on disk.</span>
+          </div>
+        </div>
+
+        <div class="settings-actions">
+          <button class="btn btn-primary" id="settings-save-btn">
+            <i class="bi bi-check2-circle"></i> Save &amp; apply
+          </button>
+          <span class="settings-status" id="settings-status" hidden></span>
+        </div>
+      </div>
+    </section>
+
   </main><!-- /main-content -->
 </div><!-- /app-body -->
 

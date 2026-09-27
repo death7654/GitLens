@@ -22,7 +22,7 @@ class GeminiProvider(ModelProvider):
         for attempt in range(max_retries):
             try:
                 response = self.client.models.generate_content(
-                    model="gemini-3.8-flash",
+                    model="gemini-2.0-flash",
                     contents=prompt,
                 )
 

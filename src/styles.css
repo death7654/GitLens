@@ -1800,3 +1800,66 @@ body.dark .linked-doc-badge {
   .form-field.form-field-half { grid-column: 1 / -1; }
   .tour-nav { flex-direction: column; gap: 8px; }
 }
+
+/* ── Settings view ───────────────────────────────────────────────────────── */
+.settings-section {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  padding: 28px 32px;
+  max-width: 680px;
+}
+
+.settings-section-title {
+  margin: 0 0 6px;
+  font-size: 15px;
+  font-weight: 650;
+  color: var(--ink);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.settings-section-desc {
+  margin: 0 0 24px;
+  color: var(--ink-2);
+  font-size: 13px;
+}
+
+.settings-select {
+  width: 100%;
+  padding: 0 12px;
+  height: 36px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: var(--surface);
+  color: var(--ink);
+  font: inherit;
+  font-size: 13.5px;
+  cursor: pointer;
+  transition: border-color var(--t-fast), box-shadow var(--t-fast);
+  appearance: auto;
+}
+
+.settings-select:focus {
+  outline: none;
+  border-color: var(--blue);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--blue) 18%, transparent);
+}
+
+.settings-actions {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin-top: 24px;
+}
+
+.settings-status {
+  font-size: 13px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.settings-status.ok   { color: var(--green); }
+.settings-status.err  { color: var(--red); }

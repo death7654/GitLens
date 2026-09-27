@@ -99,7 +99,7 @@ function setActiveNav(viewId) {
  * @param {'welcome'|'workspace'|'extraction'|'tour'} name
  */
 function showView(name) {
-  ['view-welcome', 'view-workspace', 'view-extraction', 'view-tour'].forEach(id => {
+  ['view-welcome', 'view-workspace', 'view-extraction', 'view-tour', 'view-settings'].forEach(id => {
     const el = document.getElementById(id);
     if (el) el.hidden = id !== `view-${name}`;
   });
@@ -933,9 +933,7 @@ window.addEventListener('DOMContentLoaded', () => {
   $('#nav-history').addEventListener('click', () => {
     toast('History view is coming soon.', 'info');
   });
-  $('#nav-settings').addEventListener('click', () => {
-    toast('Settings are not implemented yet.', 'info');
-  });
+  $('#nav-settings').addEventListener('click', () => showView('settings'));
 
   // ── Overview actions ───────────────────────────────────────────────────────
   $('#git-pull-btn').addEventListener('click', async () => {
@@ -1005,5 +1003,51 @@ window.addEventListener('DOMContentLoaded', () => {
   // Tour tourNavigate event from commit_graph.js
   document.addEventListener('tourNavigate', e => {
     showStop(e.detail.rank - 1);
+  });
+
+  // ── Settings ───────────────────────────────────────────────────────────────
+  // Show / hide the Base URL field depending on the chosen provider.
+  $('#settings-provider-select').addEventListener('change', () => {
+    const isOpenAi = $('#settings-provider-select').value === 'openai';
+    $('#settings-base-url-field').hidden = !isOpenAi;
+  });
+
+  // Toggle key visibility.
+  $('#settings-reveal-btn').addEventListener('click', () => {
+    const input = $('#settings-api-key');
+    const icon  = $('#settings-reveal-icon');
+    const isHidden = input.type === 'password';
+    input.type = isHidden ? 'text' : 'password';
+    icon.className = isHidden ? 'bi bi-eye-slash' : 'bi bi-eye';
+  });
+
+  // Save & apply — invoke the backend set_api_key command.
+  $('#settings-save-btn').addEventListener('click', async () => {
+    const providerName = $('#settings-provider-select').value;
+    const apiKey       = $('#settings-api-key').value.trim();
+    const baseUrl      = $('#settings-base-url').value.trim() || null;
+    const statusEl     = $('#settings-status');
+
+    if (!apiKey) {
+      statusEl.className = 'settings-status err';
+      statusEl.innerHTML = '<i class="bi bi-x-circle"></i> API key is required.';
+      statusEl.hidden = false;
+      return;
+    }
+
+    statusEl.className = 'settings-status';
+    statusEl.innerHTML = '<i class="bi bi-hourglass-split"></i> Saving…';
+    statusEl.hidden = false;
+
+    try {
+      await invoke('set_api_key', { providerName, apiKey, baseUrl });
+      statusEl.className = 'settings-status ok';
+      statusEl.innerHTML = '<i class="bi bi-check-circle"></i> Provider updated successfully.';
+      toast('API key saved — provider is active.', 'success');
+    } catch (err) {
+      statusEl.className = 'settings-status err';
+      statusEl.innerHTML = `<i class="bi bi-x-circle"></i> ${esc(String(err))}`;
+      toast('Failed to set API key.', 'error');
+    }
   });
 });

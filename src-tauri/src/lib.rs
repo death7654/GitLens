@@ -13,7 +13,7 @@ mod tour_narration;
 mod tour_types;
 
 use provider::ModelProvider;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 #[tauri::command]
 fn greet(name: &str) -> String {
@@ -57,8 +57,11 @@ fn read_repo_file(root: String, relative_path: String) -> Result<String, String>
 ///   2. `MODEL_PROVIDER=openai`    → `OpenAiProvider`    (OpenAI-compatible v1 API)
 ///   3. `GEMINI_API_KEY` is set    → `GeminiProvider`    (calls the Gemini API directly)
 ///   4. default                    → `StubProvider`      (returns an error on every call)
+///
+/// The provider is held behind a `Mutex` so it can be swapped at runtime via
+/// the `set_api_key` Tauri command without restarting the app.
 pub struct ProviderState {
-    pub provider: Arc<dyn ModelProvider>,
+    pub provider: Mutex<Arc<dyn ModelProvider>>,
 }
 
 struct StubProvider;
@@ -74,6 +77,44 @@ impl ModelProvider for StubProvider {
                 .into(),
         )
     }
+}
+
+/// Replace the active model provider at runtime.
+///
+/// `provider_name` must be one of `"gemini"`, `"openai"`, or `"openai_compatible"`.
+/// `api_key` is used as the bearer token for the chosen provider.
+/// An optional `base_url` may be supplied for OpenAI-compatible servers;
+/// it defaults to `http://localhost:11434/v1` (Ollama) when absent.
+///
+/// Returns `Ok(())` on success, or an `Err` string describing what went wrong.
+#[tauri::command]
+fn set_api_key(
+    provider_name: String,
+    api_key: String,
+    base_url: Option<String>,
+    state: tauri::State<'_, ProviderState>,
+) -> Result<(), String> {
+    if api_key.trim().is_empty() {
+        return Err("API key must not be empty.".into());
+    }
+
+    let new_provider: Arc<dyn ModelProvider> = match provider_name.to_lowercase().as_str() {
+        "gemini" => Arc::new(gemini_provider::GeminiProvider::new(api_key.trim())),
+        "openai" | "openai_compatible" => {
+            let url = base_url
+                .filter(|u| !u.trim().is_empty())
+                .unwrap_or_else(|| "http://localhost:11434/v1".to_string());
+            Arc::new(openai_provider::OpenAiProvider::new(
+                Some(api_key.trim()),
+                url,
+            ))
+        }
+        other => return Err(format!("Unknown provider '{other}'. Use 'gemini' or 'openai'.")),
+    };
+
+    *state.provider.lock().map_err(|_| "Provider lock poisoned".to_string())? = new_provider;
+    eprintln!("[gitlens] Provider swapped to '{provider_name}' via set_api_key.");
+    Ok(())
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -124,10 +165,11 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
-        .manage(ProviderState { provider })
+        .manage(ProviderState { provider: Mutex::new(provider) })
         .invoke_handler(tauri::generate_handler![
             greet,
             read_repo_file,
+            set_api_key,
             git_mining::extract_git_history,
             git_mining::discover_repo_subsystems,
             git_mining::get_repo_status,
