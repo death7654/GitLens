@@ -26,6 +26,8 @@ const DEFAULT_BASE_URL: &str = "https://generativelanguage.googleapis.com/v1beta
 pub struct GeminiProvider {
     api_key: String,
     base_url: String,
+    /// Shared HTTP client — holds the connection pool; must not be rebuilt per call.
+    client: reqwest::Client,
 }
 
 impl GeminiProvider {
@@ -34,6 +36,10 @@ impl GeminiProvider {
         Self {
             api_key: api_key.into(),
             base_url: DEFAULT_BASE_URL.to_string(),
+            client: reqwest::Client::builder()
+                .timeout(Duration::from_secs(60))
+                .build()
+                .expect("failed to build reqwest client"),
         }
     }
 
@@ -50,7 +56,14 @@ impl GeminiProvider {
             return Err("GEMINI_API_KEY is set but empty".to_string());
         }
         let base_url = env::var("GEMINI_BASE_URL").unwrap_or_else(|_| DEFAULT_BASE_URL.to_string());
-        Ok(Self { api_key, base_url })
+        Ok(Self {
+            api_key,
+            base_url,
+            client: reqwest::Client::builder()
+                .timeout(Duration::from_secs(60))
+                .build()
+                .expect("failed to build reqwest client"),
+        })
     }
 }
 
@@ -167,12 +180,7 @@ impl ModelProvider for GeminiProvider {
             },
         };
 
-        let client = reqwest::Client::builder()
-            .timeout(Duration::from_secs(60))
-            .build()
-            .map_err(|e| format!("failed to build HTTP client: {e}"))?;
-
-        let response = client
+        let response = self.client
             .post(&url)
             .json(&body)
             .send()
