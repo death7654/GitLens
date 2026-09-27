@@ -1129,6 +1129,11 @@ html.platform-linux body.wm-inactive .wm-btn::before { opacity: .45; }
   color: var(--muted);
 }
 
+.field-optional {
+  font-weight: 400;
+  color: var(--muted);
+}
+
 .input-with-btn {
   display: flex;
   gap: 6px;
@@ -1863,3 +1868,82 @@ body.dark .linked-doc-badge {
 
 .settings-status.ok   { color: var(--green); }
 .settings-status.err  { color: var(--red); }
+
+.saved-keys-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 16px;
+}
+
+.saved-keys-empty {
+  font: 12px var(--mono);
+  color: var(--muted);
+}
+
+.saved-key-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+}
+
+.saved-key-row.is-active {
+  border-color: var(--orange);
+  background: var(--orange-bg);
+}
+
+.saved-key-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1;
+  min-width: 0;
+}
+
+.saved-key-label {
+  font-weight: 650;
+  font-size: 13px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.saved-key-meta {
+  font: 11px var(--mono);
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.saved-key-provider-badge {
+  font: 10px var(--mono);
+  text-transform: uppercase;
+  letter-spacing: .05em;
+  padding: 2px 7px;
+  border-radius: 4px;
+  background: var(--surface-2);
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.saved-key-active-badge {
+  font: 10px var(--mono);
+  text-transform: uppercase;
+  letter-spacing: .05em;
+  padding: 2px 7px;
+  border-radius: 4px;
+  background: var(--orange);
+  color: #fff;
+  white-space: nowrap;
+}
+
+.saved-key-actions {
+  display: flex;
+  gap: 6px;
+  flex-shrink: 0;
+}

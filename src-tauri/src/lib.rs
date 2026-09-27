@@ -1,3 +1,4 @@
+mod anthropic_provider;
 mod bob_provider;
 mod doc_fetch;
 mod gemini_provider;
@@ -63,6 +64,12 @@ fn read_repo_file(root: String, relative_path: String) -> Result<String, String>
 /// key entered mid-session takes effect on the very next request with no
 /// restart needed.
 ///
+/// `set_api_key` also resolves and returns a model ID appropriate to the
+/// chosen provider (see `default_model_id_for_provider`) — the frontend
+/// captures that return value and uses it to build `RankingConfig`/
+/// `TourConfig` for subsequent requests, since a model ID that's right for
+/// one provider (e.g. `"gemini-flash-latest"`) is meaningless to another.
+///
 /// Provider selection at startup (in priority order):
 ///   1. `GITLENS_MOCK_PROVIDER=1`  → `MockProvider`  (test / CI — no key needed)
 ///   2. default                    → `StubProvider`  (returns a clear error
@@ -78,40 +85,69 @@ impl ModelProvider for StubProvider {
     async fn call(&self, _req: provider::ModelRequest) -> Result<provider::ModelResponse, String> {
         Err(
             "No model provider is configured. \
-             Open Settings and save an API key for Gemini or OpenAI, \
+             Open Settings and save an API key for Gemini, OpenAI, or Anthropic, \
              or set GITLENS_MOCK_PROVIDER=1 for testing."
                 .into(),
         )
     }
 }
 
+/// A reasonable default model for each provider, used when the Settings
+/// page's optional Model field is left blank. Kept as "-latest"-style
+/// aliases where the vendor offers one, for the same reason
+/// `RankingConfig`/`TourConfig` default to `"gemini-flash-latest"` rather
+/// than a pinned version: pinned model names get retired (see the comment
+/// history on those defaults) and an alias tracks the vendor's current
+/// recommendation instead.
+fn default_model_id_for_provider(provider_name: &str) -> &'static str {
+    match provider_name {
+        "gemini" => "gemini-flash-latest",
+        "openai" => "gpt-4o-mini",
+        "anthropic" => "claude-3-5-haiku-latest",
+        _ => "gemini-flash-latest",
+    }
+}
+
 /// Backs the Settings page's "Save & apply" button
-/// (`invoke('set_api_key', { providerName, apiKey, baseUrl })` in `main.js`).
+/// (`invoke('set_api_key', { providerName, apiKey, baseUrl, modelId })` in
+/// `main.js`).
 ///
 /// Swaps the app's active `ModelProvider` in place — every subsequent
-/// ranking/summary/narration call picks up the new provider immediately,
-/// no restart required. `base_url` is only used by the `"openai"` provider
-/// today (the Settings UI only shows that field for that choice); Gemini
-/// still allows an override via the `GEMINI_BASE_URL` env var for advanced
-/// use (a proxy or regional endpoint), but not from this command.
+/// ranking/summary/narration call picks up the new provider immediately, no
+/// restart required. Returns the *resolved* model ID (the caller's
+/// `model_id` if non-empty, else `default_model_id_for_provider`'s fallback)
+/// so the frontend can reflect it back into the Model field and use it when
+/// building `RankingConfig`/`TourConfig` for later requests.
+///
+/// `base_url` is used by the `"openai"` and `"anthropic"` providers (for a
+/// local OpenAI-compatible server or a proxy, respectively); Gemini still
+/// allows an override only via the `GEMINI_BASE_URL` env var, since the
+/// Settings UI doesn't show that field for it.
 #[tauri::command]
 fn set_api_key(
     provider_name: String,
     api_key: String,
     base_url: Option<String>,
+    model_id: Option<String>,
     provider_state: tauri::State<'_, ProviderState>,
-) -> Result<(), String> {
+) -> Result<String, String> {
     let api_key = api_key.trim().to_string();
     if api_key.is_empty() {
         return Err("API key cannot be empty.".into());
     }
 
+    let resolved_model_id = model_id
+        .map(|m| m.trim().to_string())
+        .filter(|m| !m.is_empty())
+        .unwrap_or_else(|| default_model_id_for_provider(&provider_name).to_string());
+
     let new_provider: Arc<dyn ModelProvider> = match provider_name.as_str() {
         "gemini" => Arc::new(gemini_provider::GeminiProvider::new(api_key)),
         "openai" => Arc::new(openai_provider::OpenAiProvider::with_base_url(api_key, base_url)),
+        "anthropic" => Arc::new(anthropic_provider::AnthropicProvider::with_base_url(api_key, base_url)),
         other => {
             return Err(format!(
-                "Unknown provider '{other}'. Expected 'gemini' or 'openai'."
+                "Unknown provider '{other}'. Expected 'gemini', 'openai', or 'anthropic'."
             ))
         }
     };
@@ -121,7 +157,7 @@ fn set_api_key(
         .lock()
         .map_err(|e| format!("provider lock was poisoned: {e}"))?;
     *guard = new_provider;
-    Ok(())
+    Ok(resolved_model_id)
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]

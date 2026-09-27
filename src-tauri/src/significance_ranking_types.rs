@@ -99,7 +99,20 @@ pub struct RankingOutput {
     pub meta: RankingMeta,
 }
 
+/// `#[serde(default)]` (container-level): when the frontend sends a `cfg`
+/// object that only overrides a subset of fields — e.g. `{ "model_id": "..." }`
+/// from `buildRankingConfig()` in main.js — serde fills in every field the
+/// payload omits from `RankingConfig::default()` below, field by field,
+/// rather than requiring the caller to specify all of them or none at all.
+/// Without this, `Option<RankingConfig>`'s `Some` case deserializes strictly:
+/// omitting *any* field (as happened first with the newly-added
+/// `reasoning_enabled`, then with `prompt_version` once the frontend was
+/// trimmed down to send almost nothing) fails with "missing field", even
+/// though `cfg: None` already relied on `.unwrap_or_default()` for the
+/// "send nothing at all" case. This closes that gap permanently: any field
+/// added to this struct in the future is automatically covered too.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct RankingConfig {
     pub prompt_version: String,
     pub model_id: String,
@@ -310,5 +323,32 @@ mod tests {
             Some(v) => unsafe { env::set_var("GITLENS_SPLIT_REASONING_FROM_EXTRACTION", v) },
             None => unsafe { env::remove_var("GITLENS_SPLIT_REASONING_FROM_EXTRACTION") },
         }
+    }
+
+    // -- serde(default) actually closes the "missing field" gap --------------
+
+    #[test]
+    fn deserializes_from_partial_json_via_serde_default() {
+        // Mirrors what buildRankingConfig() in main.js now sends: only
+        // model_id, nothing else. Before #[serde(default)] was added to the
+        // struct, this failed with "missing field `prompt_version`" (and
+        // before that, "missing field `reasoning_enabled`" the moment this
+        // struct grew that field) even though `cfg: null` worked fine.
+        let json = serde_json::json!({ "model_id": "gpt-4o-mini" });
+        let cfg: RankingConfig = serde_json::from_value(json).expect(
+            "a partial object should deserialize by filling missing fields from Default",
+        );
+        assert_eq!(cfg.model_id, "gpt-4o-mini");
+        assert_eq!(cfg.prompt_version, RankingConfig::default().prompt_version);
+        assert_eq!(cfg.target_min, RankingConfig::default().target_min);
+    }
+
+    #[test]
+    fn deserializes_from_empty_json_object() {
+        let cfg: RankingConfig = serde_json::from_value(serde_json::json!({})).expect(
+            "an empty object should deserialize to the full default",
+        );
+        assert_eq!(cfg.target_min, RankingConfig::default().target_min);
+        assert_eq!(cfg.target_max, RankingConfig::default().target_max);
     }
 }

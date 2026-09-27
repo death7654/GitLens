@@ -439,21 +439,28 @@
 
       <div class="settings-section">
         <h2 class="settings-section-title"><i class="bi bi-cpu"></i> Model provider</h2>
-        <p class="settings-section-desc">Enter an API key to activate a provider. This is sent to the backend and takes effect immediately — no restart needed.</p>
+        <p class="settings-section-desc">Enter an API key to activate a provider. This is sent to the backend and takes effect immediately — no restart needed. Saved keys are stored in this browser's local storage on this device only.</p>
 
         <div class="form-grid">
+          <div class="form-field">
+            <label for="settings-key-label">Label <span class="field-optional">(optional)</span></label>
+            <input type="text" id="settings-key-label" placeholder="e.g. Personal Gemini key" autocomplete="off" />
+            <span class="field-hint">A name to tell this saved key apart from others — shown in the list below.</span>
+          </div>
+
           <div class="form-field">
             <label for="settings-provider-select">Provider</label>
             <select id="settings-provider-select" class="settings-select">
               <option value="gemini">Google Gemini</option>
               <option value="openai">OpenAI / OpenAI-compatible</option>
+              <option value="anthropic">Anthropic Claude</option>
             </select>
           </div>
 
           <div class="form-field" id="settings-base-url-field" hidden>
             <label for="settings-base-url">Base URL</label>
             <input type="text" id="settings-base-url" placeholder="http://localhost:11434/v1" autocomplete="off" />
-            <span class="field-hint">Override for local servers (Ollama, LM Studio, etc.). Leave blank for the real OpenAI API.</span>
+            <span class="field-hint">Optional. Override for a local server (Ollama, LM Studio, etc.) or a proxy — for OpenAI-compatible endpoints like Groq, Mistral, or DeepSeek, point this at their API base URL. Leave blank for the provider's real API.</span>
           </div>
 
           <div class="form-field">
@@ -464,7 +471,13 @@
                 <i class="bi bi-eye" id="settings-reveal-icon"></i>
               </button>
             </div>
-            <span class="field-hint">The key is sent to the Rust backend and used for AI requests. It is not stored on disk.</span>
+            <span class="field-hint">Sent to the Rust backend for AI requests, and saved to this browser's local storage so you can switch back to it later. Not stored on disk by the backend, and never sent anywhere else.</span>
+          </div>
+
+          <div class="form-field">
+            <label for="settings-model">Model <span class="field-optional">(optional)</span></label>
+            <input type="text" id="settings-model" placeholder="e.g. gemini-flash-latest" autocomplete="off" />
+            <span class="field-hint">Leave blank to use a sensible default for the selected provider.</span>
           </div>
         </div>
 
@@ -472,7 +485,19 @@
           <button class="btn btn-primary" id="settings-save-btn">
             <i class="bi bi-check2-circle"></i> Save &amp; apply
           </button>
+          <button class="btn btn-ghost" id="settings-new-btn" type="button">
+            <i class="bi bi-plus-lg"></i> New key
+          </button>
           <span class="settings-status" id="settings-status" hidden></span>
+        </div>
+      </div>
+
+      <div class="settings-section">
+        <h2 class="settings-section-title"><i class="bi bi-key"></i> Saved keys</h2>
+        <p class="settings-section-desc">Switch the active provider instantly, or delete a key you no longer need.</p>
+
+        <div class="saved-keys-list" id="settings-saved-keys-list">
+          <p class="saved-keys-empty" id="settings-saved-keys-empty">No saved keys yet — save one above to see it here.</p>
         </div>
       </div>
     </section>

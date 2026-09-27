@@ -469,18 +469,305 @@ async function discoverSubsystems() {
 // Tour config & cache
 // ---------------------------------------------------------------------------
 
+/**
+ * Tracks the model ID that goes with whichever provider is currently active
+ * on the backend (see set_api_key in lib.rs). A model ID that's right for
+ * one provider (e.g. "gemini-flash-latest") is meaningless to another (e.g.
+ * OpenAI wants "gpt-4o-mini"), so every place that used to hardcode
+ * 'gemini-flash-latest' now reads this instead. It starts pointed at the
+ * Gemini default purely so buildTourConfig()/buildRankingConfig() have
+ * *something* sane to send if a request somehow fires before Settings has
+ * ever been saved this session (that request will fail anyway, since no
+ * provider is configured until then — see StubProvider in lib.rs — so the
+ * exact placeholder value here doesn't matter).
+ */
+let activeModelId = 'gemini-flash-latest';
+
+/**
+ * Called after a successful Settings save with the model ID set_api_key
+ * resolved (see its doc comment in lib.rs) — either what the user typed
+ * into the optional Model field, or a per-provider default.
+ * @param {string} providerName
+ * @param {string} resolvedModelId
+ */
+function setActiveModelId(providerName, resolvedModelId) {
+  activeModelId = resolvedModelId;
+}
+
+// ---------------------------------------------------------------------------
+// Saved API keys — persisted in this browser's localStorage (per device,
+// never sent anywhere except to the Rust backend when applied). Lets the
+// person save multiple named keys (e.g. "Personal Gemini", "Work OpenAI"),
+// switch between them instantly, and delete ones they no longer need. The
+// backend itself (see set_api_key in lib.rs) has no concept of "saved" keys
+// at all — it just holds whichever single provider was most recently
+// applied, so all of the list/switch/delete bookkeeping lives here.
+// ---------------------------------------------------------------------------
+
+const SAVED_KEYS_STORAGE_KEY    = 'gitlens.savedApiKeys';
+const ACTIVE_KEY_ID_STORAGE_KEY = 'gitlens.activeApiKeyId';
+const PROVIDER_LABELS = { gemini: 'Gemini', openai: 'OpenAI', anthropic: 'Anthropic' };
+
+/** Id of the saved-key entry currently loaded into the form, if any — set
+ *  whenever "Use" is clicked or a save completes, so a later edit + Save
+ *  updates that same entry instead of creating a duplicate. Cleared by the
+ *  "New key" button. */
+let editingKeyId = null;
+
+function loadSavedKeys() {
+  try {
+    const raw = localStorage.getItem(SAVED_KEYS_STORAGE_KEY);
+    const parsed = raw ? JSON.parse(raw) : [];
+    return Array.isArray(parsed) ? parsed : [];
+  } catch (err) {
+    console.warn('[settings] failed to read saved API keys from localStorage:', err);
+    return [];
+  }
+}
+
+function writeSavedKeys(keys) {
+  try {
+    localStorage.setItem(SAVED_KEYS_STORAGE_KEY, JSON.stringify(keys));
+  } catch (err) {
+    console.warn('[settings] failed to write saved API keys to localStorage:', err);
+    toast('Could not save the key to local storage.', 'error');
+  }
+}
+
+function upsertSavedKey(entry) {
+  const keys = loadSavedKeys();
+  const idx = keys.findIndex(k => k.id === entry.id);
+  if (idx >= 0) keys[idx] = { ...keys[idx], ...entry };
+  else keys.push(entry);
+  writeSavedKeys(keys);
+}
+
+function getActiveKeyId() {
+  try { return localStorage.getItem(ACTIVE_KEY_ID_STORAGE_KEY); }
+  catch { return null; }
+}
+
+function setActiveKeyId(id) {
+  try { localStorage.setItem(ACTIVE_KEY_ID_STORAGE_KEY, id); }
+  catch (err) { console.warn('[settings] failed to persist active key id:', err); }
+}
+
+function clearActiveKeyId() {
+  try { localStorage.removeItem(ACTIVE_KEY_ID_STORAGE_KEY); }
+  catch { /* best-effort */ }
+}
+
+/** e.g. "AIza…9f3k" — never render a saved key at full length. */
+function maskApiKey(key) {
+  if (!key) return '';
+  if (key.length <= 8) return '•'.repeat(key.length);
+  return `${key.slice(0, 4)}${'•'.repeat(Math.min(key.length - 8, 20))}${key.slice(-4)}`;
+}
+
+/** Loads a saved entry's values into the form (used by both "Use" and the
+ *  startup auto-restore) without necessarily applying it to the backend. */
+function fillFormFromEntry(entry, resolvedModelId) {
+  $('#settings-key-label').value       = entry.label || '';
+  $('#settings-provider-select').value = entry.providerName;
+  $('#settings-base-url').value        = entry.baseUrl || '';
+  $('#settings-base-url-field').hidden = entry.providerName === 'gemini';
+  $('#settings-api-key').value         = entry.apiKey || '';
+  $('#settings-model').value           = resolvedModelId ?? entry.modelId ?? '';
+}
+
+/** Re-renders the "Saved keys" list from localStorage from scratch — the
+ *  list is small, so a full rebuild on every change is simpler than diffing. */
+function renderSavedKeysList() {
+  const container = $('#settings-saved-keys-list');
+  if (!container) return;
+  const keys     = loadSavedKeys();
+  const activeId = getActiveKeyId();
+
+  container.innerHTML = '';
+
+  if (keys.length === 0) {
+    const empty = document.createElement('p');
+    empty.className = 'saved-keys-empty';
+    empty.id = 'settings-saved-keys-empty';
+    empty.textContent = 'No saved keys yet — save one above to see it here.';
+    container.appendChild(empty);
+    return;
+  }
+
+  keys.forEach(entry => {
+    const isActive = entry.id === activeId;
+
+    const row = document.createElement('div');
+    row.className = 'saved-key-row' + (isActive ? ' is-active' : '');
+
+    const info = document.createElement('div');
+    info.className = 'saved-key-info';
+    const labelEl = document.createElement('div');
+    labelEl.className = 'saved-key-label';
+    labelEl.textContent = entry.label || PROVIDER_LABELS[entry.providerName] || entry.providerName;
+    const metaEl = document.createElement('div');
+    metaEl.className = 'saved-key-meta';
+    metaEl.textContent = `${maskApiKey(entry.apiKey)} · ${entry.modelId || 'default model'}`;
+    info.appendChild(labelEl);
+    info.appendChild(metaEl);
+
+    const providerBadge = document.createElement('span');
+    providerBadge.className = 'saved-key-provider-badge';
+    providerBadge.textContent = PROVIDER_LABELS[entry.providerName] || entry.providerName;
+
+    const actions = document.createElement('div');
+    actions.className = 'saved-key-actions';
+
+    if (isActive) {
+      const activeBadge = document.createElement('span');
+      activeBadge.className = 'saved-key-active-badge';
+      activeBadge.textContent = 'Active';
+      actions.appendChild(activeBadge);
+    } else {
+      const useBtn = document.createElement('button');
+      useBtn.className = 'btn btn-ghost btn-sm';
+      useBtn.type = 'button';
+      useBtn.innerHTML = '<i class="bi bi-arrow-repeat"></i> Use';
+      useBtn.addEventListener('click', () => useSavedKey(entry.id));
+      actions.appendChild(useBtn);
+    }
+
+    const deleteBtn = document.createElement('button');
+    deleteBtn.className = 'btn btn-danger btn-sm';
+    deleteBtn.type = 'button';
+    deleteBtn.setAttribute('aria-label', `Delete "${entry.label || entry.providerName}"`);
+    deleteBtn.innerHTML = '<i class="bi bi-trash3"></i>';
+    deleteBtn.addEventListener('click', () => deleteSavedKey(entry.id));
+    actions.appendChild(deleteBtn);
+
+    row.appendChild(info);
+    row.appendChild(providerBadge);
+    row.appendChild(actions);
+    container.appendChild(row);
+  });
+}
+
+/** "Use" — applies a saved key to the backend immediately and marks it
+ *  active, without requiring a second click of "Save & apply". */
+async function useSavedKey(id) {
+  const entry = loadSavedKeys().find(k => k.id === id);
+  if (!entry) return;
+
+  const statusEl = $('#settings-status');
+  statusEl.className = 'settings-status';
+  statusEl.innerHTML = '<i class="bi bi-hourglass-split"></i> Switching…';
+  statusEl.hidden = false;
+
+  try {
+    const resolvedModelId = await invoke('set_api_key', {
+      providerName: entry.providerName,
+      apiKey: entry.apiKey,
+      baseUrl: entry.baseUrl,
+      modelId: entry.modelId,
+    });
+    setActiveModelId(entry.providerName, resolvedModelId);
+    setActiveKeyId(entry.id);
+    fillFormFromEntry(entry, resolvedModelId);
+    editingKeyId = entry.id;
+
+    const displayName = entry.label || PROVIDER_LABELS[entry.providerName] || entry.providerName;
+    statusEl.className = 'settings-status ok';
+    statusEl.innerHTML = `<i class="bi bi-check-circle"></i> Switched to "${esc(displayName)}".`;
+    toast(`Switched to "${displayName}".`, 'success');
+  } catch (err) {
+    statusEl.className = 'settings-status err';
+    statusEl.innerHTML = `<i class="bi bi-x-circle"></i> ${esc(String(err))}`;
+    toast('Failed to switch key.', 'error');
+  } finally {
+    renderSavedKeysList();
+  }
+}
+
+/** Deletes a saved key from localStorage. Note this only forgets the saved
+ *  entry — the backend keeps whatever provider was most recently applied
+ *  (see set_api_key in lib.rs) until the person switches to something else,
+ *  it does not revert to StubProvider just because its entry was deleted. */
+function deleteSavedKey(id) {
+  const keys      = loadSavedKeys();
+  const entry     = keys.find(k => k.id === id);
+  const remaining = keys.filter(k => k.id !== id);
+  writeSavedKeys(remaining);
+
+  if (getActiveKeyId() === id) clearActiveKeyId();
+  if (editingKeyId === id) editingKeyId = null;
+
+  renderSavedKeysList();
+  toast(`Deleted "${entry?.label || PROVIDER_LABELS[entry?.providerName] || 'key'}".`, 'success');
+}
+
+/** Called once on startup: if a previously-active key was saved from an
+ *  earlier session, silently re-applies it so the person doesn't have to
+ *  re-enter Settings every launch. Failure (e.g. a since-revoked key) just
+ *  leaves the app on StubProvider with a toast — same as never having
+ *  configured one. */
+async function restoreActiveKeyOnStartup() {
+  const activeId = getActiveKeyId();
+  if (!activeId) return;
+
+  const entry = loadSavedKeys().find(k => k.id === activeId);
+  if (!entry) {
+    clearActiveKeyId();
+    return;
+  }
+
+  try {
+    const resolvedModelId = await invoke('set_api_key', {
+      providerName: entry.providerName,
+      apiKey: entry.apiKey,
+      baseUrl: entry.baseUrl,
+      modelId: entry.modelId,
+    });
+    setActiveModelId(entry.providerName, resolvedModelId);
+    fillFormFromEntry(entry, resolvedModelId);
+    editingKeyId = entry.id;
+    toast(`Restored "${entry.label || PROVIDER_LABELS[entry.providerName] || entry.providerName}".`, 'success');
+  } catch (err) {
+    console.warn('[settings] failed to restore saved key on startup:', err);
+    toast('Could not restore your saved API key — please re-select it in Settings.', 'error');
+  } finally {
+    renderSavedKeysList();
+  }
+}
+
 /** Cache directory written next to the repository root at runtime. */
 function getCacheRoot() {
   return (window.miningOutput?.repo_path || repoPath) + '/.ghost-cache';
 }
 
 /**
+ * Build a RankingConfig override from the credentials panel inputs.
+ *
+ * Deliberately sends ONLY the fields we actually want to override —
+ * model_id, which tracks whichever provider is currently active (see the
+ * activeModelId doc comment above) — rather than mirroring every field of
+ * RankingConfig. That struct-mirroring approach broke the moment the
+ * backend added a new required field (`reasoning_enabled`) that this
+ * function didn't know about, because `Option<RankingConfig>`'s Some case
+ * deserializes strictly by default. Requires `#[serde(default)]` on
+ * `RankingConfig` in significance_ranking_types.rs, so serde fills in every
+ * field this object omits (including any added after this comment was
+ * written) from `RankingConfig::default()`, the same way `cfg: null` already
+ * relied on `.unwrap_or_default()` for the "send nothing at all" case.
+ */
+function buildRankingConfig() {
+  return {
+    model_id: activeModelId,
+  };
+}
+
+/**
  * Build a TourConfig from the credentials panel inputs.
- * model_id defaults to 'gemini-flash-latest' — matches TourConfig::default()
- * in tour_types.rs (a Google-maintained alias, not a pinned version that can
- * be retired). fetch_linked_documents is enabled only when at least one
- * token is provided (the backend enforces the same check and will error if
- * the flag is true but no token is present).
+ * model_id tracks whichever provider is currently active (see the
+ * activeModelId doc comment above) rather than a fixed string, since a
+ * model ID that's right for one provider is meaningless to another.
+ * fetch_linked_documents is enabled only when at least one token is
+ * provided (the backend enforces the same check and will error if the flag
+ * is true but no token is present).
  */
 function buildTourConfig() {
   const ghToken   = $('#gh-token-input')?.value?.trim() || null;
@@ -489,7 +776,7 @@ function buildTourConfig() {
   const jiraToken = $('#jira-token-input')?.value?.trim() || null;
   return {
     narration_prompt_version: 'v1',
-    model_id: 'gemini-flash-latest',
+    model_id: activeModelId,
     temperature: 0.3,
     max_narration_tokens: 1024,
     fetch_linked_documents: !!(ghToken || jiraToken),
@@ -541,7 +828,7 @@ async function generateTour() {
       repoPath: mining.repo_path,
       cacheRoot,
       subsystems,
-      cfg: null,  // null → RankingConfig::default() (target 10-15 stops)
+      cfg: buildRankingConfig(),  // mirrors RankingConfig::default(), but with the active provider's model_id
     });
     window.rankingOutput = ranking;
     log(`Ranking complete — ${ranking.tour_candidates.length} tour stops selected`, 'success');
@@ -1009,10 +1296,12 @@ window.addEventListener('DOMContentLoaded', () => {
   });
 
   // ── Settings ───────────────────────────────────────────────────────────────
-  // Show / hide the Base URL field depending on the chosen provider.
+  // Show / hide the Base URL field depending on the chosen provider. Gemini's
+  // endpoint is only overridable via the GEMINI_BASE_URL env var (advanced,
+  // rarely needed), so it's the only provider that hides this field.
   $('#settings-provider-select').addEventListener('change', () => {
-    const isOpenAi = $('#settings-provider-select').value === 'openai';
-    $('#settings-base-url-field').hidden = !isOpenAi;
+    const showBaseUrl = $('#settings-provider-select').value !== 'gemini';
+    $('#settings-base-url-field').hidden = !showBaseUrl;
   });
 
   // Toggle key visibility.
@@ -1024,12 +1313,30 @@ window.addEventListener('DOMContentLoaded', () => {
     icon.className = isHidden ? 'bi bi-eye-slash' : 'bi bi-eye';
   });
 
-  // Save & apply — invoke the backend set_api_key command.
+  // "New key" — clear the form so the next Save creates a fresh saved entry
+  // instead of overwriting whichever one was last loaded into the form.
+  $('#settings-new-btn').addEventListener('click', () => {
+    editingKeyId = null;
+    $('#settings-key-label').value = '';
+    $('#settings-provider-select').value = 'gemini';
+    $('#settings-base-url').value = '';
+    $('#settings-base-url-field').hidden = true;
+    $('#settings-api-key').value = '';
+    $('#settings-model').value = '';
+    $('#settings-status').hidden = true;
+  });
+
+  // Save & apply — invoke the backend set_api_key command, then persist the
+  // key locally so it shows up in the "Saved keys" list. Editing an entry
+  // that was loaded via "Use" (editingKeyId set) updates it in place rather
+  // than creating a duplicate.
   $('#settings-save-btn').addEventListener('click', async () => {
+    const label        = $('#settings-key-label').value.trim();
     const providerName = $('#settings-provider-select').value;
-    const apiKey       = $('#settings-api-key').value.trim();
-    const baseUrl      = $('#settings-base-url').value.trim() || null;
-    const statusEl     = $('#settings-status');
+    const apiKey        = $('#settings-api-key').value.trim();
+    const baseUrl       = $('#settings-base-url').value.trim() || null;
+    const modelId        = $('#settings-model').value.trim() || null;
+    const statusEl       = $('#settings-status');
 
     if (!apiKey) {
       statusEl.className = 'settings-status err';
@@ -1043,9 +1350,30 @@ window.addEventListener('DOMContentLoaded', () => {
     statusEl.hidden = false;
 
     try {
-      await invoke('set_api_key', { providerName, apiKey, baseUrl });
+      // set_api_key resolves a model ID appropriate to the chosen provider
+      // (either the one just typed, or a per-provider default) and returns
+      // it — see setActiveModelId's doc comment for why every subsequent
+      // request needs to use this value instead of a hardcoded string.
+      const resolvedModelId = await invoke('set_api_key', { providerName, apiKey, baseUrl, modelId });
+      setActiveModelId(providerName, resolvedModelId);
+      $('#settings-model').value = resolvedModelId;
+
+      const id = editingKeyId || `key_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+      upsertSavedKey({
+        id,
+        label: label || null,
+        providerName,
+        apiKey,
+        baseUrl,
+        modelId: resolvedModelId,
+        createdAt: new Date().toISOString(),
+      });
+      editingKeyId = id;
+      setActiveKeyId(id);
+      renderSavedKeysList();
+
       statusEl.className = 'settings-status ok';
-      statusEl.innerHTML = '<i class="bi bi-check-circle"></i> Provider updated successfully.';
+      statusEl.innerHTML = `<i class="bi bi-check-circle"></i> Saved and applied — using model "${esc(resolvedModelId)}".`;
       toast('API key saved — provider is active.', 'success');
     } catch (err) {
       statusEl.className = 'settings-status err';
@@ -1053,4 +1381,10 @@ window.addEventListener('DOMContentLoaded', () => {
       toast('Failed to set API key.', 'error');
     }
   });
+
+  // Render whatever's already saved immediately (don't wait on the restore
+  // network call below so the list isn't empty while that's in flight), then
+  // try to silently re-apply whichever key was active last session.
+  renderSavedKeysList();
+  restoreActiveKeyOnStartup();
 });
