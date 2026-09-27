@@ -1,4 +1,4 @@
-# Onboarding Ghost 👻
+# Onboarding Ghost
 ### A GitLens feature — built for the IBM Bob 2.0 Hackathon
 
 > New to a codebase? Skip the "spelunk through six years of git blame" phase.
