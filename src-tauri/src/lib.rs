@@ -3,6 +3,7 @@ mod doc_fetch;
 mod gemini_provider;
 mod git_mining;
 mod mock_provider;
+mod openai_provider;
 mod provider;
 mod testing_api;
 mod significance_ranking;
@@ -52,9 +53,10 @@ fn read_repo_file(root: String, relative_path: String) -> Result<String, String>
 /// Holds the active `ModelProvider` for the lifetime of the app.
 ///
 /// Provider selection at startup (in priority order):
-///   1. `GITLENS_MOCK_PROVIDER=1`  → `MockProvider`   (test / CI)
-///   2. `GEMINI_API_KEY` is set    → `GeminiProvider`  (calls the Gemini API directly)
-///   3. default                    → `StubProvider`   (returns an error on every call)
+///   1. `GITLENS_MOCK_PROVIDER=1`  → `MockProvider`      (test / CI)
+///   2. `MODEL_PROVIDER=openai`    → `OpenAiProvider`    (OpenAI-compatible v1 API)
+///   3. `GEMINI_API_KEY` is set    → `GeminiProvider`    (calls the Gemini API directly)
+///   4. default                    → `StubProvider`      (returns an error on every call)
 pub struct ProviderState {
     pub provider: Arc<dyn ModelProvider>,
 }
@@ -66,7 +68,8 @@ impl ModelProvider for StubProvider {
     async fn call(&self, _req: provider::ModelRequest) -> Result<provider::ModelResponse, String> {
         Err(
             "No model provider is configured. \
-             Set GEMINI_API_KEY, \
+             Set MODEL_PROVIDER=openai (and optionally OPENAI_BASE_URL / OPENAI_API_KEY), \
+             set GEMINI_API_KEY, \
              or set GITLENS_MOCK_PROVIDER=1 for testing."
                 .into(),
         )
@@ -103,6 +106,10 @@ pub fn run() {
     let provider: Arc<dyn ModelProvider> =
         if std::env::var("GITLENS_MOCK_PROVIDER").as_deref() == Ok("1") {
             Arc::new(mock_provider::MockProvider)
+        } else if std::env::var("MODEL_PROVIDER").as_deref() == Ok("openai") {
+            let p = openai_provider::OpenAiProvider::from_env();
+            eprintln!("[gitlens] Using OpenAiProvider (base_url: {})", p.base_url());
+            Arc::new(p)
         } else {
             match gemini_provider::GeminiProvider::from_env() {
                 Ok(p) => Arc::new(p),
