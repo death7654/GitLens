@@ -899,6 +899,15 @@ window.addEventListener('DOMContentLoaded', () => {
   $('#choose-folder-btn').addEventListener('click', chooseFolder);
   $('#change-folder-btn').addEventListener('click', chooseFolder);
   $('#sidebar-repo-btn').addEventListener('click', () => repoPath ? showView('workspace') : chooseFolder());
+  // Topbar breadcrumb shows the currently open repo — clicking it re-opens
+  // the folder picker so the user can switch repos from the title bar
+  // without having to navigate back to the Overview page first. (Needs the
+  // matching -webkit-app-region: no-drag override in styles.css, since the
+  // rest of the topbar is a window-drag region.)
+  $('#topbar-breadcrumb').addEventListener('click', chooseFolder);
+  $('#topbar-breadcrumb').addEventListener('keydown', e => {
+    if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); chooseFolder(); }
+  });
 
   // ── Sidebar nav ────────────────────────────────────────────────────────────
   $('#nav-overview').addEventListener('click', () => {

@@ -80,6 +80,22 @@ body.dark {
 /* ── Reset ───────────────────────────────────────────────────────────────────── */
 *, *::before, *::after { box-sizing: border-box; }
 
+/* Several components below (.view-welcome, .tour-idle, .tour-state-panel,
+   .export-row, …) set an explicit `display` value for their normal/visible
+   state. Per the CSS cascade, an author-stylesheet rule always wins over the
+   user-agent default `[hidden] { display: none }`, even when specificity is
+   equal — so without this override, toggling an element's `hidden` property
+   from JS (main.js's showView()/setTourState()) had no visible effect on any
+   element that also had an authored `display` rule: it stayed on screen,
+   stacked on top of whichever view/panel was actually meant to be showing
+   (e.g. the Welcome screen never went away after opening a repo, and the
+   tour's idle/ranking/fetching/error panels all rendered at once). This
+   single high-priority rule restores the expected "hidden means gone"
+   behaviour everywhere in the app. */
+[hidden] {
+  display: none !important;
+}
+
 html, body {
   margin: 0;
   min-height: 100%;
@@ -105,7 +121,14 @@ html.platform-mac body {
    the transparent window like a native vibrancy window; flush and square on
    Linux, where the window itself is already opaque and rectangular. */
 .app-shell {
-  min-height: 100vh;
+  /* Must be a bounded `height`, not `min-height`: a flex child further down
+     this chain (.main-content) relies on its ancestors having a fixed height
+     so its own `overflow-y: auto` has something finite to scroll within.
+     With `min-height`, this element (and .app-body below) grew to fit
+     whatever content main-content had, which pushed the whole shell taller
+     than the viewport — and since html/body clip overflow, that extra
+     content was simply cut off with no way to reach it. */
+  height: 100vh;
   background: var(--bg);
   overflow: hidden;
 }
@@ -158,6 +181,7 @@ html.platform-linux .topbar  { padding-right: var(--wm-zone-w-linux); }
 
 /* every interactive element in the topbar must opt out of dragging */
 .brand,
+.topbar-breadcrumb,
 .topbar-actions,
 .topbar-actions *,
 .wm-buttons {
@@ -193,6 +217,17 @@ html.platform-linux .topbar  { padding-right: var(--wm-zone-w-linux); }
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
+  /* Clicking here re-opens the folder picker (see main.js) — cursor + hover
+     make that discoverable instead of it just looking like static text. */
+  cursor: pointer;
+  border-radius: var(--r-sm);
+  padding: 4px 8px;
+  margin: -4px -8px;
+}
+
+.topbar-breadcrumb:hover {
+  background: var(--surface-2);
+  color: var(--ink-2);
 }
 
 .bc-item { color: var(--muted); }
@@ -382,7 +417,11 @@ html.platform-linux body.wm-inactive .wm-btn::before { opacity: .45; }
 /* ── App body ────────────────────────────────────────────────────────────────── */
 .app-body {
   display: flex;
-  min-height: calc(100vh - var(--topbar-h));
+  /* Bounded `height` (not `min-height`) for the same reason as .app-shell
+     above: this is the direct flex parent of .main-content, so it must
+     actually cap at the viewport for .main-content's `overflow-y: auto`
+     to engage instead of the whole page just growing past the window. */
+  height: calc(100vh - var(--topbar-h));
   /* let the sidebar scroll independently of the main area */
   overflow: hidden;
 }
